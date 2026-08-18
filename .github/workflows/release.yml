@@ -1,0 +1,61 @@
+name: Release Go module
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version (for example v0.1.0-alpha.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: main
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          check-latest: true
+          cache: false
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [[ ! "$VERSION" =~ ^v0\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Initial releases must be valid v0 semantic versions" >&2
+            exit 1
+          fi
+          if git rev-parse --verify --quiet "refs/tags/$VERSION"; then
+            echo "Tag $VERSION already exists" >&2
+            exit 1
+          fi
+      - name: Verify core
+        run: |
+          test "$(go list -m all | wc -l)" -eq 1
+          go vet ./...
+          go test -race ./...
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+          awk -v total="$total" 'BEGIN { if (total + 0 < 85) exit 1 }'
+      - name: Verify example
+        working-directory: examples/in-memory-websubhub
+        run: |
+          go vet ./...
+          go test -race ./...
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh release create "$VERSION" --target "$(git rev-parse HEAD)" --generate-notes --title "$VERSION"

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go:
+          - 1.25.x
+          - 1.26.x
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+          cache: false
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Verify standard-library-only module graph
+        run: test "$(go list -m all | wc -l)" -eq 1
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -shuffle=on ./...
+      - name: Race test
+        if: matrix.go == '1.26.x'
+        run: go test -race ./...
+      - name: Enforce coverage
+        if: matrix.go == '1.26.x'
+        shell: bash
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+          awk -v total="$total" 'BEGIN { if (total + 0 < 85) exit 1 }'
+
+  example:
+    name: In-memory example
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          check-latest: true
+          cache: false
+      - name: Check formatting
+        working-directory: examples/in-memory-websubhub
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        working-directory: examples/in-memory-websubhub
+        run: go vet ./...
+      - name: Test
+        working-directory: examples/in-memory-websubhub
+        run: go test -race ./...
+
+  platforms:
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          check-latest: true
+          cache: false
+      - name: Test core
+        run: go test ./...
+      - name: Test example
+        working-directory: examples/in-memory-websubhub
+        run: go test ./...
