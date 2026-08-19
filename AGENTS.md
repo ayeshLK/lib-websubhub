@@ -51,7 +51,8 @@ them.
   tests for the root module.
 - `examples/in-memory-websubhub/`: runnable hub in an independent Go module.
 - `examples/kafka-websubhub/`: runnable Kafka-backed hub in an independent Go
-  module with an application-scoped external dependency.
+  module, using an application-owned state log, per-topic content logs, and
+  per-subscription consumers.
 - `docs/`: specification and implementation, testing, documentation, and
   release plans.
 - `.github/workflows/`: pull-request validation, release preparation, and
@@ -162,6 +163,48 @@ an optional extension, disabled by default:
 - Extension behavior is excluded from the W3C conformance claim and must remain
   isolated from subscription and unsubscription paths.
 
+## Kafka example architecture
+
+The Kafka example demonstrates application-owned persistence and delivery; it
+must not become a broker abstraction in the core package. Preserve these design
+properties unless the task explicitly revises the example:
+
+- `websub-events` is a single-partition state-event log. Publish the concrete
+  framework values (`TopicRegistration`, `TopicDeregistration`,
+  `VerifiedSubscription`, and `VerifiedUnsubscription`) directly. The only
+  application-specific state value, `subscriptionState`, anonymously embeds a
+  `VerifiedSubscription` and adds a flat `status: "stale"` field. Do not add a
+  universal event envelope.
+- A state callback finishes when Kafka acknowledges its write. Only the Kafka
+  replay/tail worker mutates the in-memory projection, so state is eventually
+  consistent by design.
+- Startup captures the state log's end offset and replays to that boundary
+  before starting subscription workers. An empty log must complete replay
+  immediately; do not infer completion solely from fetched partition records.
+- Map each exact WebSub topic URL to
+  `websub-topic-<sha256(topic)>`. Content must be valid JSON and the Kafka
+  record must preserve the exact body bytes and complete `Content-Type` value.
+- Run one consumer worker per subscription. Its group ID is
+  `websub-subscriber-<sha256(topic + callback + LeaseStartedAt)>`, with explicit
+  separators in the hash input. New groups start at the end of the topic.
+- Poll a bounded batch, deliver records sequentially, and commit the batch only
+  after every delivery succeeds. This is at-least-once delivery; duplicates are
+  possible if the process stops after HTTP success but before the commit.
+- After bounded delivery retries are exhausted, publish a stale subscription
+  state and stop the worker without committing the failed batch. Reactivating
+  that subscription reuses its group and offset. An explicit unsubscribe and
+  later resubscribe receives a new group from its new `LeaseStartedAt`.
+- Unsubscription, topic deregistration, HTTP `410 Gone`, and hub shutdown stop
+  the affected workers.
+
+The example is intentionally single-instance, JSON-only, and uses plaintext
+local Kafka with automatic topic creation. It omits lease-expiry scheduling and
+production controls such as authentication, TLS, quotas, metrics, and SSRF
+policy. These are example limitations, not changes to the framework contract;
+a production hub must enforce lease expiry and capacity-test the one-consumer-
+per-subscription model. Protect the state log because subscription secrets are
+application state and may be present in its records.
+
 ## Dependencies and compatibility
 
 - The core module and its tests use only the Go standard library. Confirm with
@@ -212,9 +255,21 @@ go vet ./...
 go test ./...
 ```
 
-For the Kafka example, run the same commands from
-`examples/kafka-websubhub/`. Its tests use an in-process broker double and do
-not require Docker; use its Compose file only for manual integration testing.
+For the Kafka example, run from `examples/kafka-websubhub/`:
+
+```sh
+gofmt -w *.go
+go mod tidy
+go vet ./...
+go test -shuffle=on ./...
+go test -race ./...
+docker compose config --quiet
+```
+
+Its tests use an in-process broker double and do not require Docker. Use
+`docker compose up -d` followed by `go run .` only for manual integration
+testing. The external `franz-go` dependency must remain isolated to this
+example module.
 
 For API, protocol, or security changes:
 
