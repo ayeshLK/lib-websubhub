@@ -177,23 +177,41 @@ security review. It cannot be introduced by an automated dependency update.
 
 ## 5. Continuous delivery and release workflow
 
-`release.yml` is manually initiated with `workflow_dispatch`. Automatic
-release on every merge is intentionally avoided. It runs from the default branch
-in a protected `release` environment requiring maintainer approval. Only the
-release job receives:
+Release preparation and publication are separate. `release-please.yml` runs on
+updates to the default branch and maintains a release pull request from
+Conventional Commit history. The release pull request selects the next version,
+updates `CHANGELOG.md`, and records the version in
+`.release-please-manifest.json`; merging ordinary changes does not publish a
+release. While the module is below v1, a breaking change advances the minor
+version rather than declaring the API stable.
+
+Commit and squash-merge subjects use Conventional Commit prefixes. `fix:`
+selects a patch, `feat:` selects a minor version, and a `!` or
+`BREAKING CHANGE:` footer marks an incompatible change. Maintainers review the
+proposed version and release notes before merging the release pull request.
+
+The preparation action uses the built-in `GITHUB_TOKEN` by default. Configure a
+fine-grained `RELEASE_PLEASE_TOKEN` with repository contents and pull-request
+write access when CI must run automatically on the generated pull request;
+GitHub suppresses workflow events caused by its built-in token.
+
+`release.yml` remains manually initiated with `workflow_dispatch`, but no longer
+accepts a version input. It reads the reviewed version from the manifest and
+runs from the default branch in a protected `release` environment requiring
+maintainer approval. Only the release job receives:
 
 ```yaml
 permissions:
   contents: write
 ```
 
-The workflow:
+The publication workflow:
 
 1. resolves the exact default-branch commit to release;
-2. rejects a dirty, existing, malformed, or incompatible version/tag;
+2. rejects an unprepared, existing, malformed, or incompatible version/tag;
 3. runs module-policy, compatibility, full-test, race, coverage, documentation,
    and security gates;
-4. verifies changelog and release-note coverage;
+4. verifies the prepared changelog section and uses it as the release notes;
 5. creates the immutable `vX.Y.Z` tag and GitHub Release;
 6. requests the version through `proxy.golang.org`;
 7. verifies it from a clean temporary consumer module;

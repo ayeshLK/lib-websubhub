@@ -5,6 +5,11 @@ All notable changes to this project will be documented here. The project uses
 
 ## Unreleased
 
+### Changed
+
+- Automate semantic-version selection and changelog preparation through a
+  reviewable release pull request.
+
 ### Added
 
 - Initial standard-library-only WebSub hub framework.
