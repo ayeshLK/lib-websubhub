@@ -1,19 +1,14 @@
-name: Release Go module
+name: Release prepared Go module
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Semantic version (for example v0.1.0-alpha.1)
-        required: true
-        type: string
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Release ${{ inputs.version }}
+    name: Release prepared version
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -28,19 +23,31 @@ jobs:
           go-version: 1.26.x
           check-latest: true
           cache: false
-      - name: Validate version
-        env:
-          VERSION: ${{ inputs.version }}
+      - name: Read and validate prepared version
+        id: version
         shell: bash
         run: |
-          if [[ ! "$VERSION" =~ ^v0\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Initial releases must be valid v0 semantic versions" >&2
+          VERSION="$(jq -er '.["."] | select(type == "string")' .release-please-manifest.json)"
+          if [[ ! "$VERSION" =~ ^0\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Prepared release must be a valid v0 semantic version" >&2
             exit 1
           fi
-          if git rev-parse --verify --quiet "refs/tags/$VERSION"; then
-            echo "Tag $VERSION already exists" >&2
+          TAG="v$VERSION"
+          if git rev-parse --verify --quiet "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists; merge the next release PR first" >&2
             exit 1
           fi
+          if ! awk -v version="$VERSION" 'index($0, "## [" version "]") == 1 { found = 1 } END { exit !found }' CHANGELOG.md; then
+            echo "CHANGELOG.md has no release section for $VERSION" >&2
+            exit 1
+          fi
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Verify core
         run: |
           test "$(go list -m all | wc -l)" -eq 1
@@ -57,5 +64,5 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-        run: gh release create "$VERSION" --target "$(git rev-parse HEAD)" --generate-notes --title "$VERSION"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" --target "$(git rev-parse HEAD)" --notes-file release-notes.md --title "$TAG"

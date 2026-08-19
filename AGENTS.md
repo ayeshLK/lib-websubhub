@@ -52,7 +52,8 @@ them.
 - `examples/in-memory-websubhub/`: runnable hub in an independent Go module.
 - `docs/`: specification and implementation, testing, documentation, and
   release plans.
-- `.github/workflows/`: pull-request validation and manual release automation.
+- `.github/workflows/`: pull-request validation, release preparation, and
+  manually approved publication automation.
 
 Examples are independent modules so future example-only dependencies do not
 enter the core module graph. Run and tidy each affected example from its own
@@ -220,6 +221,12 @@ For API, protocol, or security changes:
 For workflow or release changes, keep third-party actions pinned to full commit
 SHAs, retain least-privilege permissions, and validate YAML syntax. Do not create
 tags, releases, commits, or pushes unless the user explicitly requests them.
+
+Use Conventional Commit subjects for commits and squash-merge titles that reach
+`main`: `fix:` selects a patch release, `feat:` selects a minor release, and
+`type!:` or a `BREAKING CHANGE:` footer identifies an incompatible change.
+Release Please prepares the resulting version and changelog in a reviewable pull
+request; publication remains a separate, manually approved workflow.
 
 ## Documentation and licensing
 
