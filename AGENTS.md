@@ -50,6 +50,8 @@ them.
 - `*_test.go`: unit, wire-level, lifecycle, security-boundary, and conformance
   tests for the root module.
 - `examples/in-memory-websubhub/`: runnable hub in an independent Go module.
+- `examples/kafka-websubhub/`: runnable Kafka-backed hub in an independent Go
+  module with an application-scoped external dependency.
 - `docs/`: specification and implementation, testing, documentation, and
   release plans.
 - `.github/workflows/`: pull-request validation, release preparation, and
@@ -209,6 +211,10 @@ gofmt -w *.go
 go vet ./...
 go test ./...
 ```
+
+For the Kafka example, run the same commands from
+`examples/kafka-websubhub/`. Its tests use an in-process broker double and do
+not require Docker; use its Compose file only for manual integration testing.
 
 For API, protocol, or security changes:
 

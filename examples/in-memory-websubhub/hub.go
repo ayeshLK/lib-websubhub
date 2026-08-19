@@ -24,7 +24,6 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	websubhub "github.com/ayeshLK/lib-websubhub"
@@ -82,7 +81,6 @@ type memoryHub struct {
 	topicHTTPClient *http.Client
 	maxTopicBody    int64
 	logger          *slog.Logger
-	messageSequence atomic.Uint64
 }
 
 func newMemoryHub(options hubOptions) (*memoryHub, error) {
@@ -296,7 +294,6 @@ func (h *memoryHub) deliver() {
 func (h *memoryHub) contentFor(update websubhub.UpdateMessage) (websubhub.ContentDistribution, error) {
 	if update.Kind == websubhub.UpdateContent {
 		return websubhub.ContentDistribution{
-			ID:          h.nextMessageID(),
 			ContentType: update.ContentType,
 			Body:        append([]byte(nil), update.Body...),
 		}, nil
@@ -326,7 +323,6 @@ func (h *memoryHub) contentFor(update websubhub.UpdateMessage) (websubhub.Conten
 		contentType = "application/octet-stream"
 	}
 	return websubhub.ContentDistribution{
-		ID:          h.nextMessageID(),
 		ContentType: contentType,
 		Body:        body,
 	}, nil
@@ -374,10 +370,6 @@ func (h *memoryHub) hasSubscription(topic, callback string) bool {
 	defer h.mu.RUnlock()
 	stored, exists := h.subscriptions[topic][callback]
 	return exists && stored.expiresAt.After(time.Now())
-}
-
-func (h *memoryHub) nextMessageID() string {
-	return strconv.FormatUint(h.messageSequence.Add(1), 10)
 }
 
 func (h *memoryHub) Close(ctx context.Context) error {

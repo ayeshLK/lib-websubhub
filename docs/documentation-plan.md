@@ -95,7 +95,7 @@ Explain:
 - constructing a client from a verified subscription;
 - exact-byte HMAC behavior;
 - Link headers;
-- header safety and message IDs;
+- reserved-header safety;
 - 2xx, 410, and other failure classification;
 - why the client performs one attempt;
 - how an application may implement retry, broker acknowledgment, dead-lettering,

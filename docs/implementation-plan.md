@@ -131,7 +131,8 @@ Complete:
   response splitting, secret leakage, and goroutine exhaustion;
 - public API compatibility snapshot;
 - documentation, conformance matrix, adoption guide, and examples;
-- a broker-backed architecture example using fake application interfaces;
+- a Kafka-backed architecture example with a real adapter and in-process broker
+  tests, isolated in its own module;
 - release checklist and changelog.
 
 ## Dependency direction

@@ -64,8 +64,10 @@ Exercise register -> subscribe -> validate -> verify -> application storage ->
 application delivery -> unsubscribe. These examples prove flexibility without
 making the framework own the state.
 
-A second fake-broker integration test models producer, consumer, ack, nack, and
-dead-letter behavior entirely in test/application code.
+The Kafka-backed example compiles a real broker adapter and tests producer,
+consumer-owned state projection, eventual consistency, replay, acknowledgement,
+bounded retry, and dead-letter policy through an in-process broker double. Its
+documented Compose profile enables optional manual testing against Apache Kafka.
 
 ### Concurrency and lifecycle tests
 
@@ -110,7 +112,7 @@ inputs. Every fixed parser or security regression becomes a seed.
 | Verification | each 2xx; exact/wrong body; 3xx/4xx/5xx; timeout; oversized body; redirect refused |
 | Controller | disabled error; enabled mark; duplicate mark; verified callback invocation |
 | Verified callback | only after success; receives clones; failure and optional hub-error callback |
-| Delivery wire | exact bytes/type; Link values; safe headers; message ID |
+| Delivery wire | exact bytes/type; Link values; safe headers; no framework-defined extension headers |
 | HMAC | known SHA-256 vectors; exact body; lowercase hex; absent without secret |
 | Delivery result | every 2xx; 410 sentinel; other statuses; timeout; network error; bounded body |
 | Publisher client | register/deregister/publish/notify success and detailed errors |
