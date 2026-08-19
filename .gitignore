@@ -24,8 +24,24 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# Environment files may contain credentials. Keep documented examples trackable.
 .env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local agent state, transcripts, indexes, and caches. Repository instructions
+# such as AGENTS.md and shareable tool configuration remain trackable.
+.agents/
+.codex/
+.claude/settings.local.json
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache*/
+
+# Local logs and scratch directories
+*.log
+.tmp/
 
 # Editor/IDE
 .idea/
