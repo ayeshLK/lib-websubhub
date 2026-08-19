@@ -19,69 +19,89 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 
 	websubhub "github.com/ayeshLK/lib-websubhub"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-const eventsPartition int32 = 0
+const (
+	eventsPartition        int32 = 0
+	kafkaContentTypeHeader       = "Content-Type"
+	maxContentBatchRecords       = 5
+)
+
+type subscriptionStatus string
+
+const subscriptionStatusStale subscriptionStatus = "stale"
+
+// subscriptionState extends the protocol subscription with application-owned
+// delivery state. Its embedded fields remain flat in the Kafka JSON record.
+type subscriptionState struct {
+	websubhub.VerifiedSubscription
+	Status subscriptionStatus `json:"status"`
+}
+
+func newStaleSubscription(verified websubhub.VerifiedSubscription) subscriptionState {
+	return subscriptionState{
+		VerifiedSubscription: verified,
+		Status:               subscriptionStatusStale,
+	}
+}
+
+type contentMessage struct {
+	ContentType string
+	Body        []byte
+}
+
+type contentBatchConsumer func(context.Context, []contentMessage) error
 
 type eventConsumer interface {
 	applyTopicRegistration(context.Context, websubhub.TopicRegistration) error
 	applyTopicDeregistration(context.Context, websubhub.TopicDeregistration) error
 	applySubscription(context.Context, websubhub.VerifiedSubscription) error
+	applyStaleSubscription(context.Context, subscriptionState) error
 	applyUnsubscription(context.Context, websubhub.VerifiedUnsubscription) error
 }
-
-type updateConsumer func(context.Context, string, updateEvent) error
 
 type messageBroker interface {
 	PublishTopicRegistration(context.Context, websubhub.TopicRegistration) error
 	PublishTopicDeregistration(context.Context, websubhub.TopicDeregistration) error
 	PublishSubscription(context.Context, websubhub.VerifiedSubscription) error
+	PublishStaleSubscription(context.Context, subscriptionState) error
 	PublishUnsubscription(context.Context, websubhub.VerifiedUnsubscription) error
-	PublishUpdate(context.Context, updateEvent) error
-	PublishDeadLetter(context.Context, deadLetter) error
+	PublishContent(context.Context, string, contentMessage) error
 	ReplayEvents(context.Context, eventConsumer) error
 	ConsumeEvents(context.Context, eventConsumer) error
-	ConsumeUpdates(context.Context, updateConsumer) error
+	ConsumeSubscription(context.Context, string, string, contentBatchConsumer) error
 	Close()
 }
 
 type kafkaBrokerOptions struct {
-	brokers         []string
-	eventsTopic     string
-	updatesTopic    string
-	deadLetterTopic string
-	deliveryGroup   string
+	brokers     []string
+	eventsTopic string
 }
 
 type kafkaBroker struct {
-	producer        *kgo.Client
-	eventsClient    *kgo.Client
-	updatesClient   *kgo.Client
-	eventsTopic     string
-	updatesTopic    string
-	deadLetterTopic string
-	eventsOffset    int64
+	brokers      []string
+	producer     *kgo.Client
+	eventsClient *kgo.Client
+	eventsTopic  string
+	eventsOffset int64
 }
 
 func newKafkaBroker(ctx context.Context, options kafkaBrokerOptions) (*kafkaBroker, error) {
 	if len(options.brokers) == 0 {
 		return nil, errors.New("at least one Kafka broker is required")
 	}
-	if options.eventsTopic == "" || options.updatesTopic == "" || options.deadLetterTopic == "" {
-		return nil, errors.New("Kafka topic names must not be empty")
-	}
-	if options.deliveryGroup == "" {
-		return nil, errors.New("Kafka delivery consumer group must not be empty")
+	if options.eventsTopic == "" {
+		return nil, errors.New("Kafka event topic must not be empty")
 	}
 
 	producer, err := kgo.NewClient(
 		kgo.SeedBrokers(options.brokers...),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.RecordPartitioner(kgo.ManualPartitioner()),
+		kgo.AllowAutoTopicCreation(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create Kafka producer: %w", err)
@@ -101,27 +121,12 @@ func newKafkaBroker(ctx context.Context, options kafkaBrokerOptions) (*kafkaBrok
 		producer.Close()
 		return nil, fmt.Errorf("create Kafka event consumer: %w", err)
 	}
-	updatesClient, err := kgo.NewClient(
-		kgo.SeedBrokers(options.brokers...),
-		kgo.ConsumerGroup(options.deliveryGroup),
-		kgo.ConsumeTopics(options.updatesTopic),
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
-		kgo.DisableAutoCommit(),
-		kgo.BlockRebalanceOnPoll(),
-	)
-	if err != nil {
-		eventsClient.Close()
-		producer.Close()
-		return nil, fmt.Errorf("create Kafka update consumer: %w", err)
-	}
 
 	return &kafkaBroker{
-		producer:        producer,
-		eventsClient:    eventsClient,
-		updatesClient:   updatesClient,
-		eventsTopic:     options.eventsTopic,
-		updatesTopic:    options.updatesTopic,
-		deadLetterTopic: options.deadLetterTopic,
+		brokers:      append([]string(nil), options.brokers...),
+		producer:     producer,
+		eventsClient: eventsClient,
+		eventsTopic:  options.eventsTopic,
 	}, nil
 }
 
@@ -137,16 +142,28 @@ func (b *kafkaBroker) PublishSubscription(ctx context.Context, subscription webs
 	return b.produceJSON(ctx, b.eventsTopic, subscription)
 }
 
+func (b *kafkaBroker) PublishStaleSubscription(ctx context.Context, subscription subscriptionState) error {
+	return b.produceJSON(ctx, b.eventsTopic, subscription)
+}
+
 func (b *kafkaBroker) PublishUnsubscription(ctx context.Context, unsubscription websubhub.VerifiedUnsubscription) error {
 	return b.produceJSON(ctx, b.eventsTopic, unsubscription)
 }
 
-func (b *kafkaBroker) PublishUpdate(ctx context.Context, update updateEvent) error {
-	return b.produceJSON(ctx, b.updatesTopic, update)
-}
-
-func (b *kafkaBroker) PublishDeadLetter(ctx context.Context, letter deadLetter) error {
-	return b.produceJSON(ctx, b.deadLetterTopic, letter)
+func (b *kafkaBroker) PublishContent(ctx context.Context, topic string, content contentMessage) error {
+	record := &kgo.Record{
+		Topic:     topic,
+		Partition: eventsPartition,
+		Value:     append([]byte(nil), content.Body...),
+		Headers: []kgo.RecordHeader{{
+			Key:   kafkaContentTypeHeader,
+			Value: []byte(content.ContentType),
+		}},
+	}
+	if err := b.producer.ProduceSync(ctx, record).FirstErr(); err != nil {
+		return fmt.Errorf("produce Kafka content to %s: %w", topic, err)
+	}
+	return nil
 }
 
 func (b *kafkaBroker) produceJSON(ctx context.Context, topic string, value any) error {
@@ -218,36 +235,60 @@ func (b *kafkaBroker) ConsumeEvents(ctx context.Context, apply eventConsumer) er
 	}
 }
 
-func (b *kafkaBroker) ConsumeUpdates(ctx context.Context, consume updateConsumer) error {
+func (b *kafkaBroker) ConsumeSubscription(ctx context.Context, topic, group string, consume contentBatchConsumer) error {
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(b.brokers...),
+		kgo.ConsumerGroup(group),
+		kgo.ConsumeTopics(topic),
+		kgo.ConsumeStartOffset(kgo.NewOffset().AtEnd()),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
+		kgo.DisableAutoCommit(),
+		kgo.BlockRebalanceOnPoll(),
+		kgo.AllowAutoTopicCreation(),
+	)
+	if err != nil {
+		return fmt.Errorf("create Kafka subscription consumer: %w", err)
+	}
+	defer client.Close()
+
 	for {
-		fetches := b.updatesClient.PollFetches(ctx)
+		fetches := client.PollRecords(ctx, maxContentBatchRecords)
 		if err := firstFetchError(ctx, fetches); err != nil {
-			return fmt.Errorf("consume Kafka updates: %w", err)
+			return fmt.Errorf("poll Kafka content: %w", err)
 		}
-		var consumeErr error
+
+		var records []*kgo.Record
+		var messages []contentMessage
 		fetches.EachRecord(func(record *kgo.Record) {
-			if consumeErr != nil {
-				return
-			}
-			var update updateEvent
-			if err := json.Unmarshal(record.Value, &update); err != nil {
-				consumeErr = fmt.Errorf("decode update record at offset %d: %w", record.Offset, err)
-				return
-			}
-			recordID := record.Topic + "-" + strconv.FormatInt(int64(record.Partition), 10) + "-" + strconv.FormatInt(record.Offset, 10)
-			if err := consume(ctx, recordID, update); err != nil {
-				consumeErr = err
-				return
-			}
-			if err := b.updatesClient.CommitRecords(ctx, record); err != nil {
-				consumeErr = fmt.Errorf("commit update offset %d: %w", record.Offset, err)
-			}
+			records = append(records, record)
+			messages = append(messages, contentMessage{
+				ContentType: recordHeader(record, kafkaContentTypeHeader),
+				Body:        append([]byte(nil), record.Value...),
+			})
 		})
-		b.updatesClient.AllowRebalance()
-		if consumeErr != nil {
-			return consumeErr
+		if len(records) == 0 {
+			client.AllowRebalance()
+			continue
+		}
+		if err := consume(ctx, messages); err != nil {
+			client.AllowRebalance()
+			return fmt.Errorf("deliver Kafka content batch: %w", err)
+		}
+		if err := client.CommitRecords(ctx, records...); err != nil {
+			client.AllowRebalance()
+			return fmt.Errorf("commit Kafka content batch: %w", err)
+		}
+		client.AllowRebalance()
+	}
+}
+
+func recordHeader(record *kgo.Record, name string) string {
+	for _, header := range record.Headers {
+		if header.Key == name {
+			return string(header.Value)
 		}
 	}
+	return ""
 }
 
 func firstFetchError(ctx context.Context, fetches kgo.Fetches) error {
@@ -262,10 +303,22 @@ func firstFetchError(ctx context.Context, fetches kgo.Fetches) error {
 
 func applyEvent(ctx context.Context, payload []byte, consumer eventConsumer) error {
 	var discriminator struct {
-		Mode websubhub.Mode
+		Mode   websubhub.Mode
+		Status subscriptionStatus `json:"status"`
 	}
 	if err := json.Unmarshal(payload, &discriminator); err != nil {
-		return fmt.Errorf("decode event mode: %w", err)
+		return fmt.Errorf("decode event discriminator: %w", err)
+	}
+
+	if discriminator.Status != "" {
+		if discriminator.Mode != websubhub.ModeSubscribe || discriminator.Status != subscriptionStatusStale {
+			return fmt.Errorf("unsupported subscription status %q", discriminator.Status)
+		}
+		var subscription subscriptionState
+		if err := json.Unmarshal(payload, &subscription); err != nil {
+			return fmt.Errorf("decode stale subscription: %w", err)
+		}
+		return consumer.applyStaleSubscription(ctx, subscription)
 	}
 
 	switch discriminator.Mode {
@@ -299,7 +352,6 @@ func applyEvent(ctx context.Context, payload []byte, consumer eventConsumer) err
 }
 
 func (b *kafkaBroker) Close() {
-	b.updatesClient.Close()
 	b.eventsClient.Close()
 	b.producer.Close()
 }

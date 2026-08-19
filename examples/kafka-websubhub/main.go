@@ -37,9 +37,6 @@ type commandOptions struct {
 	hubURL           string
 	brokers          string
 	eventsTopic      string
-	updatesTopic     string
-	deadLetterTopic  string
-	deliveryGroup    string
 	deliveryAttempts int
 	retryBackoff     time.Duration
 	startupTimeout   time.Duration
@@ -59,10 +56,7 @@ func run() error {
 	flag.StringVar(&options.hubURL, "hub-url", "http://localhost:9090/hub", "public absolute hub URL used in verification and delivery")
 	flag.StringVar(&options.brokers, "brokers", "localhost:9092", "comma-separated Kafka bootstrap brokers")
 	flag.StringVar(&options.eventsTopic, "events-topic", "websub-events", "single-partition Kafka topic containing application state events")
-	flag.StringVar(&options.updatesTopic, "updates-topic", "websubhub-updates", "Kafka topic containing durable content updates")
-	flag.StringVar(&options.deadLetterTopic, "dead-letter-topic", "websubhub-dead-letter", "Kafka topic receiving exhausted content updates")
-	flag.StringVar(&options.deliveryGroup, "delivery-group", "websubhub-delivery", "Kafka consumer group used by delivery workers")
-	flag.IntVar(&options.deliveryAttempts, "delivery-attempts", defaultDeliveryAttempts, "bounded delivery attempts before dead-lettering")
+	flag.IntVar(&options.deliveryAttempts, "delivery-attempts", defaultDeliveryAttempts, "bounded delivery attempts before marking a subscription stale")
 	flag.DurationVar(&options.retryBackoff, "retry-backoff", defaultRetryBackoff, "delay between delivery attempts")
 	flag.DurationVar(&options.startupTimeout, "startup-timeout", 30*time.Second, "Kafka connection and event replay timeout")
 	flag.Parse()
@@ -74,11 +68,8 @@ func run() error {
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), options.startupTimeout)
 	defer cancelStartup()
 	broker, err := newKafkaBroker(startupContext, kafkaBrokerOptions{
-		brokers:         splitBrokers(options.brokers),
-		eventsTopic:     options.eventsTopic,
-		updatesTopic:    options.updatesTopic,
-		deadLetterTopic: options.deadLetterTopic,
-		deliveryGroup:   options.deliveryGroup,
+		brokers:     splitBrokers(options.brokers),
+		eventsTopic: options.eventsTopic,
 	})
 	if err != nil {
 		return err
@@ -160,11 +151,8 @@ func validateCommandOptions(options commandOptions) error {
 	if len(splitBrokers(options.brokers)) == 0 {
 		return errors.New("-brokers must contain at least one address")
 	}
-	if options.eventsTopic == "" || options.updatesTopic == "" || options.deadLetterTopic == "" {
-		return errors.New("Kafka topic names must not be empty")
-	}
-	if options.deliveryGroup == "" {
-		return errors.New("-delivery-group must not be empty")
+	if options.eventsTopic == "" {
+		return errors.New("-events-topic must not be empty")
 	}
 	if options.deliveryAttempts <= 0 {
 		return errors.New("-delivery-attempts must be greater than zero")

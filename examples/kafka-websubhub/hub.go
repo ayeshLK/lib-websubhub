@@ -16,10 +16,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strconv"
 	"sync"
@@ -34,6 +38,8 @@ const (
 	defaultMaxTopicBody     = 1 << 20 // 1 MiB
 )
 
+var errSubscriptionGone = errors.New("subscription callback is gone")
+
 type hubOptions struct {
 	hubURL           string
 	broker           messageBroker
@@ -44,33 +50,21 @@ type hubOptions struct {
 	logger           *slog.Logger
 }
 
-type updateEvent struct {
-	Topic       string `json:"topic"`
-	ContentType string `json:"content_type"`
-	Body        []byte `json:"body"`
-}
-
-type deadLetter struct {
-	RecordID string      `json:"record_id"`
-	Attempts int         `json:"attempts"`
-	Reason   string      `json:"reason"`
-	Update   updateEvent `json:"update"`
-}
-
 type storedSubscription struct {
-	subscription websubhub.Subscription
-	expiresAt    time.Time
-	version      uint64
+	verified websubhub.VerifiedSubscription
+	status   subscriptionStatus
+	groupID  string
+	cancel   context.CancelFunc
 }
 
-// kafkaHub is application code: it owns Kafka persistence, lease expiry,
-// fan-out, retries, dead-lettering, and delivery policy.
+// kafkaHub is application code: it owns Kafka persistence, per-subscription
+// delivery workers, retry policy, and application state.
 type kafkaHub struct {
 	operationMu sync.Mutex
 	mu          sync.RWMutex
 	topics      map[string]struct{}
-	subscribers map[string]map[string]storedSubscription
-	nextVersion uint64
+	subscribers map[string]map[string]*storedSubscription
+	replaying   bool
 
 	broker           messageBroker
 	deliveryConfig   websubhub.DeliveryConfig
@@ -122,7 +116,8 @@ func newKafkaHub(startupContext context.Context, options hubOptions) (*kafkaHub,
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &kafkaHub{
 		topics:           make(map[string]struct{}),
-		subscribers:      make(map[string]map[string]storedSubscription),
+		subscribers:      make(map[string]map[string]*storedSubscription),
+		replaying:        true,
 		broker:           options.broker,
 		deliveryConfig:   websubhub.DeliveryConfig{HTTPClient: options.httpClient, Timeout: 15 * time.Second},
 		deliveryAttempts: options.deliveryAttempts,
@@ -141,13 +136,13 @@ func newKafkaHub(startupContext context.Context, options hubOptions) (*kafkaHub,
 		return nil, err
 	}
 
-	hub.workers.Add(2)
-	go hub.runWorker("event consumer", func() error {
-		return hub.broker.ConsumeEvents(hub.ctx, hub)
-	})
-	go hub.runWorker("update consumer", func() error {
-		return hub.broker.ConsumeUpdates(hub.ctx, hub.consumeUpdate)
-	})
+	hub.mu.Lock()
+	hub.replaying = false
+	hub.mu.Unlock()
+
+	hub.workers.Add(1)
+	go hub.runEventWorker()
+	hub.startReplayedSubscriptionWorkers()
 	go func() {
 		hub.workers.Wait()
 		close(hub.done)
@@ -167,14 +162,18 @@ func (h *kafkaHub) service() websubhub.Service {
 	}
 }
 
-func (h *kafkaHub) runWorker(name string, run func() error) {
+func (h *kafkaHub) runEventWorker() {
 	defer h.workers.Done()
-	if err := run(); err != nil && h.ctx.Err() == nil {
-		select {
-		case h.errors <- fmt.Errorf("%s: %w", name, err):
-		default:
-		}
+	if err := h.broker.ConsumeEvents(h.ctx, h); err != nil && h.ctx.Err() == nil {
+		h.reportError(fmt.Errorf("event consumer: %w", err))
 		h.cancel()
+	}
+}
+
+func (h *kafkaHub) reportError(err error) {
+	select {
+	case h.errors <- err:
+	default:
 	}
 }
 
@@ -191,7 +190,7 @@ func (h *kafkaHub) onRegisterTopic(ctx context.Context, registration websubhub.T
 	if err := h.broker.PublishTopicRegistration(ctx, registration); err != nil {
 		return websubhub.Result{}, err
 	}
-	h.logger.Info("topic registration event published", "topic", registration.Topic)
+	h.logger.Info("topic registration event published", "topic", registration.Topic, "kafka_topic", kafkaTopicName(registration.Topic))
 	return websubhub.Result{}, nil
 }
 
@@ -212,11 +211,11 @@ func (h *kafkaHub) onUpdateMessage(ctx context.Context, update websubhub.UpdateM
 	if !h.hasTopic(update.Topic) {
 		return websubhub.Result{}, &websubhub.DeniedError{Reason: "topic is not registered"}
 	}
-	event, err := h.materializeUpdate(ctx, update)
+	content, err := h.materializeContent(ctx, update)
 	if err != nil {
 		return websubhub.Result{}, err
 	}
-	if err := h.broker.PublishUpdate(ctx, event); err != nil {
+	if err := h.broker.PublishContent(ctx, kafkaTopicName(update.Topic), content); err != nil {
 		return websubhub.Result{}, err
 	}
 	return websubhub.Result{}, nil
@@ -225,6 +224,16 @@ func (h *kafkaHub) onUpdateMessage(ctx context.Context, update websubhub.UpdateM
 func (h *kafkaHub) onSubscriptionValidation(_ context.Context, subscription websubhub.Subscription, _ websubhub.RequestMetadata) error {
 	if !h.hasTopic(subscription.Topic) {
 		return &websubhub.DeniedError{Reason: "topic is not registered"}
+	}
+	h.mu.RLock()
+	stored := h.subscribers[subscription.Topic][subscription.Callback]
+	status := subscriptionStatus("")
+	if stored != nil {
+		status = stored.status
+	}
+	h.mu.RUnlock()
+	if stored != nil && status != subscriptionStatusStale {
+		return &websubhub.DeniedError{Reason: "subscriber is already registered"}
 	}
 	return nil
 }
@@ -240,10 +249,26 @@ func (h *kafkaHub) onSubscriptionVerified(ctx context.Context, verified websubhu
 	if !h.hasTopic(verified.Topic) {
 		return &websubhub.DeniedError{Reason: "topic is not registered"}
 	}
+
+	h.mu.RLock()
+	existing := h.subscribers[verified.Topic][verified.Callback]
+	var existingVerified websubhub.VerifiedSubscription
+	status := subscriptionStatus("")
+	if existing != nil {
+		existingVerified = existing.verified
+		status = existing.status
+	}
+	h.mu.RUnlock()
+	if existing != nil {
+		if status != subscriptionStatusStale {
+			return &websubhub.DeniedError{Reason: "subscriber is already registered"}
+		}
+		verified = existingVerified
+	}
 	if err := h.broker.PublishSubscription(ctx, verified); err != nil {
 		return err
 	}
-	h.logger.Info("subscription event published", "topic", verified.Topic, "lease_seconds", leaseSeconds)
+	h.logger.Info("subscription event published", "topic", verified.Topic, "consumer_group", subscriptionGroupName(verified))
 	return nil
 }
 
@@ -279,13 +304,19 @@ func (h *kafkaHub) applyTopicRegistration(_ context.Context, registration websub
 }
 
 func (h *kafkaHub) applyTopicDeregistration(_ context.Context, deregistration websubhub.TopicDeregistration) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if deregistration.Mode != websubhub.ModeDeregister || deregistration.Topic == "" {
 		return errors.New("invalid topic deregistration event")
 	}
+	h.mu.Lock()
+	byCallback := h.subscribers[deregistration.Topic]
 	delete(h.topics, deregistration.Topic)
 	delete(h.subscribers, deregistration.Topic)
+	h.mu.Unlock()
+	for _, stored := range byCallback {
+		if stored.cancel != nil {
+			stored.cancel()
+		}
+	}
 	h.logger.Info("state event applied", "mode", deregistration.Mode, "topic", deregistration.Topic)
 	return nil
 }
@@ -297,74 +328,212 @@ func (h *kafkaHub) applySubscription(_ context.Context, verified websubhub.Verif
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.nextVersion++
 	byCallback := h.subscribers[verified.Topic]
 	if byCallback == nil {
-		byCallback = make(map[string]storedSubscription)
+		byCallback = make(map[string]*storedSubscription)
 		h.subscribers[verified.Topic] = byCallback
 	}
-	byCallback[verified.Callback] = storedSubscription{
-		subscription: verified.Subscription,
-		expiresAt:    verified.LeaseStartedAt.Add(time.Duration(leaseSeconds) * time.Second),
-		version:      h.nextVersion,
+	existing := byCallback[verified.Callback]
+	if existing != nil && existing.status != subscriptionStatusStale {
+		h.mu.Unlock()
+		return nil
+	}
+	if existing != nil {
+		verified = existing.verified
+	}
+	stored := &storedSubscription{
+		verified: verified,
+		groupID:  subscriptionGroupName(verified),
+	}
+	byCallback[verified.Callback] = stored
+	startWorker := !h.replaying
+	h.mu.Unlock()
+
+	if startWorker {
+		h.startSubscriptionWorker(stored)
 	}
 	h.logger.Info("state event applied", "mode", verified.Mode, "topic", verified.Topic)
+	return nil
+}
+
+func (h *kafkaHub) applyStaleSubscription(_ context.Context, stale subscriptionState) error {
+	if stale.Status != subscriptionStatusStale || stale.Mode != websubhub.ModeSubscribe || stale.Topic == "" || stale.Callback == "" {
+		return errors.New("invalid stale subscription event")
+	}
+	h.mu.Lock()
+	stored := h.subscribers[stale.Topic][stale.Callback]
+	if stored == nil || !stored.verified.LeaseStartedAt.Equal(stale.LeaseStartedAt) {
+		h.mu.Unlock()
+		return nil
+	}
+	stored.status = subscriptionStatusStale
+	cancel := stored.cancel
+	stored.cancel = nil
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	h.logger.Info("stale subscription event applied", "topic", stale.Topic)
 	return nil
 }
 
 func (h *kafkaHub) applyUnsubscription(_ context.Context, verified websubhub.VerifiedUnsubscription) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if verified.Mode != websubhub.ModeUnsubscribe || verified.Topic == "" || verified.Callback == "" {
 		return errors.New("invalid verified unsubscription event")
 	}
+	h.mu.Lock()
 	byCallback := h.subscribers[verified.Topic]
+	stored := byCallback[verified.Callback]
 	delete(byCallback, verified.Callback)
 	if len(byCallback) == 0 {
 		delete(h.subscribers, verified.Topic)
+	}
+	h.mu.Unlock()
+	if stored != nil && stored.cancel != nil {
+		stored.cancel()
 	}
 	h.logger.Info("state event applied", "mode", verified.Mode, "topic", verified.Topic)
 	return nil
 }
 
-func (h *kafkaHub) materializeUpdate(ctx context.Context, update websubhub.UpdateMessage) (updateEvent, error) {
+func (h *kafkaHub) startReplayedSubscriptionWorkers() {
+	h.mu.RLock()
+	var subscriptions []*storedSubscription
+	for _, byCallback := range h.subscribers {
+		for _, stored := range byCallback {
+			if stored.status != subscriptionStatusStale {
+				subscriptions = append(subscriptions, stored)
+			}
+		}
+	}
+	h.mu.RUnlock()
+	for _, stored := range subscriptions {
+		h.startSubscriptionWorker(stored)
+	}
+}
+
+func (h *kafkaHub) startSubscriptionWorker(stored *storedSubscription) {
+	h.mu.Lock()
+	current := h.subscribers[stored.verified.Topic][stored.verified.Callback]
+	if current != stored || stored.status == subscriptionStatusStale || stored.cancel != nil || h.ctx.Err() != nil {
+		h.mu.Unlock()
+		return
+	}
+	workerContext, cancel := context.WithCancel(h.ctx)
+	stored.cancel = cancel
+	verified := stored.verified
+	groupID := stored.groupID
+	h.workers.Add(1)
+	h.mu.Unlock()
+
+	go func() {
+		defer h.workers.Done()
+		err := h.broker.ConsumeSubscription(
+			workerContext,
+			kafkaTopicName(verified.Topic),
+			groupID,
+			func(ctx context.Context, messages []contentMessage) error {
+				return h.deliverBatch(ctx, verified, messages)
+			},
+		)
+		if workerContext.Err() != nil || errors.Is(err, errSubscriptionGone) {
+			return
+		}
+		if err == nil {
+			return
+		}
+		stale := newStaleSubscription(verified)
+		if publishErr := h.broker.PublishStaleSubscription(h.ctx, stale); publishErr != nil {
+			h.reportError(fmt.Errorf("persist stale subscription: %w", publishErr))
+			return
+		}
+		h.logger.Error("subscription worker marked stale", "topic", verified.Topic, "error", err)
+	}()
+}
+
+func (h *kafkaHub) materializeContent(ctx context.Context, update websubhub.UpdateMessage) (contentMessage, error) {
 	if update.Kind == websubhub.UpdateContent {
-		return updateEvent{Topic: update.Topic, ContentType: update.ContentType, Body: append([]byte(nil), update.Body...)}, nil
+		content := contentMessage{ContentType: update.ContentType, Body: append([]byte(nil), update.Body...)}
+		if err := validateJSONContent(content); err != nil {
+			return contentMessage{}, err
+		}
+		return content, nil
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, update.Topic, nil)
 	if err != nil {
-		return updateEvent{}, err
+		return contentMessage{}, err
 	}
 	response, err := h.topicHTTPClient.Do(request)
 	if err != nil {
-		return updateEvent{}, err
+		return contentMessage{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return updateEvent{}, fmt.Errorf("topic returned HTTP %d", response.StatusCode)
+		return contentMessage{}, fmt.Errorf("topic returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, h.maxTopicBody+1))
 	if err != nil {
-		return updateEvent{}, err
+		return contentMessage{}, err
 	}
 	if int64(len(body)) > h.maxTopicBody {
-		return updateEvent{}, fmt.Errorf("topic response exceeds %d bytes", h.maxTopicBody)
+		return contentMessage{}, fmt.Errorf("topic response exceeds %d bytes", h.maxTopicBody)
 	}
-	contentType := response.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	content := contentMessage{
+		ContentType: response.Header.Get("Content-Type"),
+		Body:        body,
 	}
-	return updateEvent{Topic: update.Topic, ContentType: contentType, Body: body}, nil
+	if err := validateJSONContent(content); err != nil {
+		return contentMessage{}, err
+	}
+	return content, nil
 }
 
-func (h *kafkaHub) consumeUpdate(ctx context.Context, recordID string, update updateEvent) error {
-	var lastFailure error
+func validateJSONContent(content contentMessage) error {
+	mediaType, _, err := mime.ParseMediaType(content.ContentType)
+	if err != nil || mediaType != "application/json" {
+		return errors.New("content must have the application/json media type")
+	}
+	if !json.Valid(content.Body) {
+		return errors.New("content must contain valid JSON")
+	}
+	return nil
+}
+
+func (h *kafkaHub) deliverBatch(ctx context.Context, verified websubhub.VerifiedSubscription, messages []contentMessage) error {
+	client, err := websubhub.NewDeliveryClient(verified.Subscription, h.deliveryConfig)
+	if err != nil {
+		return err
+	}
+	for _, message := range messages {
+		if err := h.deliverContent(ctx, client, verified, message); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *kafkaHub) deliverContent(ctx context.Context, client *websubhub.DeliveryClient, verified websubhub.VerifiedSubscription, message contentMessage) error {
+	var deliveryErr error
 	for attempt := 1; attempt <= h.deliveryAttempts; attempt++ {
-		lastFailure = h.deliverUpdate(ctx, update)
-		if lastFailure == nil {
+		_, deliveryErr = client.Deliver(ctx, websubhub.ContentDistribution{
+			ContentType: message.ContentType,
+			Body:        append([]byte(nil), message.Body...),
+		})
+		if deliveryErr == nil {
 			return nil
+		}
+		if errors.Is(deliveryErr, websubhub.ErrSubscriptionGone) {
+			if err := h.broker.PublishUnsubscription(ctx, websubhub.VerifiedUnsubscription{
+				Unsubscription: websubhub.Unsubscription{
+					Mode:     websubhub.ModeUnsubscribe,
+					Topic:    verified.Topic,
+					Callback: verified.Callback,
+				},
+			}); err != nil {
+				return err
+			}
+			return errSubscriptionGone
 		}
 		if attempt < h.deliveryAttempts {
 			if err := waitContext(ctx, h.retryBackoff); err != nil {
@@ -372,78 +541,21 @@ func (h *kafkaHub) consumeUpdate(ctx context.Context, recordID string, update up
 			}
 		}
 	}
-
-	h.logger.Error("content delivery exhausted retries", "topic", update.Topic, "record_id", recordID, "attempts", h.deliveryAttempts)
-	return h.broker.PublishDeadLetter(ctx, deadLetter{
-		RecordID: recordID,
-		Attempts: h.deliveryAttempts,
-		Reason:   "one or more subscriber deliveries failed",
-		Update:   update,
-	})
+	return fmt.Errorf("content delivery failed after %d attempts: %w", h.deliveryAttempts, deliveryErr)
 }
 
-func (h *kafkaHub) deliverUpdate(ctx context.Context, update updateEvent) error {
-	subscriptions := h.activeSubscriptions(update.Topic, time.Now())
-	failed := false
-	for _, stored := range subscriptions {
-		client, err := websubhub.NewDeliveryClient(stored.subscription, h.deliveryConfig)
-		if err == nil {
-			_, err = client.Deliver(ctx, websubhub.ContentDistribution{
-				ContentType: update.ContentType,
-				Body:        append([]byte(nil), update.Body...),
-			})
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, websubhub.ErrSubscriptionGone) {
-			if removeErr := h.removeGone(ctx, update.Topic, stored.subscription.Callback, stored.version); removeErr != nil {
-				failed = true
-			}
-			continue
-		}
-		failed = true
-	}
-	if failed {
-		return errors.New("one or more subscriber deliveries failed")
-	}
-	return nil
+func kafkaTopicName(topic string) string {
+	return "websub-topic-" + hashIdentifier(topic)
 }
 
-func (h *kafkaHub) removeGone(ctx context.Context, topic, callback string, version uint64) error {
-	h.operationMu.Lock()
-	defer h.operationMu.Unlock()
-	h.mu.RLock()
-	stored, exists := h.subscribers[topic][callback]
-	h.mu.RUnlock()
-	if !exists || stored.version != version {
-		return nil
-	}
-	return h.broker.PublishUnsubscription(ctx, websubhub.VerifiedUnsubscription{
-		Unsubscription: websubhub.Unsubscription{
-			Mode:     websubhub.ModeUnsubscribe,
-			Topic:    topic,
-			Callback: callback,
-		},
-	})
+func subscriptionGroupName(verified websubhub.VerifiedSubscription) string {
+	key := verified.Topic + "\x00" + verified.Callback + "\x00" + verified.LeaseStartedAt.UTC().Format(time.RFC3339Nano)
+	return "websub-subscriber-" + hashIdentifier(key)
 }
 
-func (h *kafkaHub) activeSubscriptions(topic string, now time.Time) []storedSubscription {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	byCallback := h.subscribers[topic]
-	active := make([]storedSubscription, 0, len(byCallback))
-	for callback, stored := range byCallback {
-		if !stored.expiresAt.After(now) {
-			delete(byCallback, callback)
-			continue
-		}
-		active = append(active, stored)
-	}
-	if len(byCallback) == 0 {
-		delete(h.subscribers, topic)
-	}
-	return active
+func hashIdentifier(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (h *kafkaHub) hasTopic(topic string) bool {
@@ -456,8 +568,7 @@ func (h *kafkaHub) hasTopic(topic string) bool {
 func (h *kafkaHub) hasSubscription(topic, callback string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	stored, exists := h.subscribers[topic][callback]
-	return exists && stored.expiresAt.After(time.Now())
+	return h.subscribers[topic][callback] != nil
 }
 
 func waitContext(ctx context.Context, duration time.Duration) error {

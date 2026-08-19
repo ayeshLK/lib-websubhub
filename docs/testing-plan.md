@@ -66,8 +66,10 @@ making the framework own the state.
 
 The Kafka-backed example compiles a real broker adapter and tests producer,
 consumer-owned state projection, eventual consistency, replay, acknowledgement,
-bounded retry, and dead-letter policy through an in-process broker double. Its
-documented Compose profile enables optional manual testing against Apache Kafka.
+hashed topic and consumer-group mapping, per-subscription delivery workers,
+JSON content validation, bounded retry, stale-subscription state, and
+all-success batch commits through an in-process broker double. Its documented
+Compose profile enables optional manual testing against Apache Kafka.
 
 ### Concurrency and lifecycle tests
 
