@@ -32,6 +32,7 @@ import (
 	"time"
 
 	websubhub "github.com/ayeshLK/lib-websubhub"
+	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 type fakeConsumer struct {
@@ -633,6 +634,25 @@ func TestKafkaIdentifiersAreSafeAndCollisionResistant(t *testing.T) {
 		if regexp.MustCompile(`token|capability|secret`).MatchString(identifier) {
 			t.Errorf("Kafka identifier exposes URL data: %q", identifier)
 		}
+	}
+}
+
+func TestEventLogEndOffsetAcceptsEmptyTopic(t *testing.T) {
+	const topic = "websub-events"
+	response := kmsg.NewPtrListOffsetsResponse()
+	response.Topics = []kmsg.ListOffsetsResponseTopic{{
+		Topic: topic,
+		Partitions: []kmsg.ListOffsetsResponseTopicPartition{{
+			Partition: eventsPartition,
+			Offset:    0,
+		}},
+	}}
+	offset, err := eventLogEndOffset(response, topic)
+	if err != nil {
+		t.Fatalf("resolve empty event-log end: %v", err)
+	}
+	if offset != 0 {
+		t.Fatalf("empty event-log end = %d, want 0", offset)
 	}
 }
 

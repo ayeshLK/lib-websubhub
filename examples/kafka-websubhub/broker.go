@@ -21,7 +21,9 @@ import (
 	"fmt"
 
 	websubhub "github.com/ayeshLK/lib-websubhub"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 const (
@@ -116,6 +118,7 @@ func newKafkaBroker(ctx context.Context, options kafkaBrokerOptions) (*kafkaBrok
 		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{
 			options.eventsTopic: {eventsPartition: kgo.NewOffset().AtStart()},
 		}),
+		kgo.AllowAutoTopicCreation(),
 	)
 	if err != nil {
 		producer.Close()
@@ -179,13 +182,16 @@ func (b *kafkaBroker) produceJSON(ctx context.Context, topic string, value any) 
 }
 
 func (b *kafkaBroker) ReplayEvents(ctx context.Context, apply eventConsumer) error {
-	for {
+	replayEnd, err := b.eventLogEnd(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve Kafka event replay boundary: %w", err)
+	}
+	for b.eventsOffset < replayEnd {
 		fetches := b.eventsClient.PollFetches(ctx)
 		if err := firstFetchError(ctx, fetches); err != nil {
 			return fmt.Errorf("replay Kafka events: %w", err)
 		}
 
-		caughtUp := false
 		var applyErr error
 		fetches.EachPartition(func(partition kgo.FetchTopicPartition) {
 			if applyErr != nil || partition.Topic != b.eventsTopic || partition.Partition != eventsPartition {
@@ -201,15 +207,54 @@ func (b *kafkaBroker) ReplayEvents(ctx context.Context, apply eventConsumer) err
 				}
 				b.eventsOffset = record.Offset + 1
 			}
-			caughtUp = b.eventsOffset >= partition.HighWatermark
 		})
 		if applyErr != nil {
 			return applyErr
 		}
-		if caughtUp {
-			return nil
+	}
+	return nil
+}
+
+func (b *kafkaBroker) eventLogEnd(ctx context.Context) (int64, error) {
+	request := kmsg.NewPtrListOffsetsRequest()
+	topic := kmsg.NewListOffsetsRequestTopic()
+	topic.Topic = b.eventsTopic
+	partition := kmsg.NewListOffsetsRequestTopicPartition()
+	partition.Partition = eventsPartition
+	partition.Timestamp = -1
+	topic.Partitions = append(topic.Partitions, partition)
+	request.Topics = append(request.Topics, topic)
+
+	rawResponse, err := b.eventsClient.Request(ctx, request)
+	if err != nil {
+		return 0, err
+	}
+	response, ok := rawResponse.(*kmsg.ListOffsetsResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected Kafka response %T", rawResponse)
+	}
+	return eventLogEndOffset(response, b.eventsTopic)
+}
+
+func eventLogEndOffset(response *kmsg.ListOffsetsResponse, topic string) (int64, error) {
+	for _, responseTopic := range response.Topics {
+		if responseTopic.Topic != topic {
+			continue
+		}
+		for _, responsePartition := range responseTopic.Partitions {
+			if responsePartition.Partition != eventsPartition {
+				continue
+			}
+			if err := kerr.ErrorForCode(responsePartition.ErrorCode); err != nil {
+				return 0, err
+			}
+			if responsePartition.Offset < 0 {
+				return 0, fmt.Errorf("invalid Kafka log-end offset %d", responsePartition.Offset)
+			}
+			return responsePartition.Offset, nil
 		}
 	}
+	return 0, errors.New("Kafka event partition missing from list-offsets response")
 }
 
 func (b *kafkaBroker) ConsumeEvents(ctx context.Context, apply eventConsumer) error {
