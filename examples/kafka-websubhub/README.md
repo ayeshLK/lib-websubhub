@@ -6,12 +6,16 @@ transitive dependencies do not enter the core module graph.
 
 The example demonstrates an application-owned broker architecture:
 
-- a single-partition `websub-events` log records topic registrations,
-  verified subscriptions, verified unsubscriptions, and deregistrations;
+- a single-partition `websub-events` log records the framework's concrete
+  topic registrations, verified subscriptions, verified unsubscriptions, and
+  deregistrations directly, using their mode as the event discriminator;
 - validated state changes complete when Kafka acknowledges their event;
 - only the event replay/tail worker applies those events to in-memory state, so
   dependent requests observe eventual consistency;
 - every process restart replays that log before the HTTP endpoint starts;
+- subscription replay derives the original absolute expiry from
+  `LeaseStartedAt` and `EffectiveLeaseSeconds`, so replay does not renew a
+  lease;
 - `websubhub-updates` durably buffers exact content before delivery;
 - the `websubhub-delivery` consumer group commits an update only after fan-out
   succeeds or bounded retries write it to `websubhub-dead-letter`; and

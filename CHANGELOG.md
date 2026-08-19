@@ -25,9 +25,9 @@ All notable changes to this project will be documented here. The project uses
 
 ### Added
 
-- Kafka-backed hub example with an eventually consistent `websub-events`
-  projection, durable update consumption, bounded delivery retries, and
-  dead-letter handling.
+- Kafka-backed hub example that writes concrete framework state values to an
+  eventually consistent `websub-events` projection, with durable update
+  consumption, bounded delivery retries, and dead-letter handling.
 - Initial standard-library-only WebSub hub framework.
 - In-memory WebSub hub example.
 - Architecture, testing, documentation, and release plans.

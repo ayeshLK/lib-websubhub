@@ -21,16 +21,26 @@ import (
 	"fmt"
 	"strconv"
 
+	websubhub "github.com/ayeshLK/lib-websubhub"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 const eventsPartition int32 = 0
 
-type eventConsumer func(context.Context, stateEvent) error
+type eventConsumer interface {
+	applyTopicRegistration(context.Context, websubhub.TopicRegistration) error
+	applyTopicDeregistration(context.Context, websubhub.TopicDeregistration) error
+	applySubscription(context.Context, websubhub.VerifiedSubscription) error
+	applyUnsubscription(context.Context, websubhub.VerifiedUnsubscription) error
+}
+
 type updateConsumer func(context.Context, string, updateEvent) error
 
 type messageBroker interface {
-	PublishEvent(context.Context, stateEvent) error
+	PublishTopicRegistration(context.Context, websubhub.TopicRegistration) error
+	PublishTopicDeregistration(context.Context, websubhub.TopicDeregistration) error
+	PublishSubscription(context.Context, websubhub.VerifiedSubscription) error
+	PublishUnsubscription(context.Context, websubhub.VerifiedUnsubscription) error
 	PublishUpdate(context.Context, updateEvent) error
 	PublishDeadLetter(context.Context, deadLetter) error
 	ReplayEvents(context.Context, eventConsumer) error
@@ -115,8 +125,20 @@ func newKafkaBroker(ctx context.Context, options kafkaBrokerOptions) (*kafkaBrok
 	}, nil
 }
 
-func (b *kafkaBroker) PublishEvent(ctx context.Context, event stateEvent) error {
-	return b.produceJSON(ctx, b.eventsTopic, event)
+func (b *kafkaBroker) PublishTopicRegistration(ctx context.Context, registration websubhub.TopicRegistration) error {
+	return b.produceJSON(ctx, b.eventsTopic, registration)
+}
+
+func (b *kafkaBroker) PublishTopicDeregistration(ctx context.Context, deregistration websubhub.TopicDeregistration) error {
+	return b.produceJSON(ctx, b.eventsTopic, deregistration)
+}
+
+func (b *kafkaBroker) PublishSubscription(ctx context.Context, subscription websubhub.VerifiedSubscription) error {
+	return b.produceJSON(ctx, b.eventsTopic, subscription)
+}
+
+func (b *kafkaBroker) PublishUnsubscription(ctx context.Context, unsubscription websubhub.VerifiedUnsubscription) error {
+	return b.produceJSON(ctx, b.eventsTopic, unsubscription)
 }
 
 func (b *kafkaBroker) PublishUpdate(ctx context.Context, update updateEvent) error {
@@ -156,12 +178,7 @@ func (b *kafkaBroker) ReplayEvents(ctx context.Context, apply eventConsumer) err
 				b.eventsOffset = partition.LogStartOffset
 			}
 			for _, record := range partition.Records {
-				event, err := decodeEvent(record.Value)
-				if err != nil {
-					applyErr = fmt.Errorf("decode event at offset %d: %w", record.Offset, err)
-					return
-				}
-				if err := apply(ctx, event); err != nil {
+				if err := applyEvent(ctx, record.Value, apply); err != nil {
 					applyErr = fmt.Errorf("apply event at offset %d: %w", record.Offset, err)
 					return
 				}
@@ -189,12 +206,7 @@ func (b *kafkaBroker) ConsumeEvents(ctx context.Context, apply eventConsumer) er
 			if applyErr != nil || record.Topic != b.eventsTopic || record.Partition != eventsPartition || record.Offset < b.eventsOffset {
 				return
 			}
-			event, err := decodeEvent(record.Value)
-			if err != nil {
-				applyErr = fmt.Errorf("decode event at offset %d: %w", record.Offset, err)
-				return
-			}
-			if err := apply(ctx, event); err != nil {
+			if err := applyEvent(ctx, record.Value, apply); err != nil {
 				applyErr = fmt.Errorf("apply event at offset %d: %w", record.Offset, err)
 				return
 			}
@@ -248,12 +260,42 @@ func firstFetchError(ctx context.Context, fetches kgo.Fetches) error {
 	return nil
 }
 
-func decodeEvent(payload []byte) (stateEvent, error) {
-	var event stateEvent
-	if err := json.Unmarshal(payload, &event); err != nil {
-		return stateEvent{}, err
+func applyEvent(ctx context.Context, payload []byte, consumer eventConsumer) error {
+	var discriminator struct {
+		Mode websubhub.Mode
 	}
-	return event, nil
+	if err := json.Unmarshal(payload, &discriminator); err != nil {
+		return fmt.Errorf("decode event mode: %w", err)
+	}
+
+	switch discriminator.Mode {
+	case websubhub.ModeRegister:
+		var registration websubhub.TopicRegistration
+		if err := json.Unmarshal(payload, &registration); err != nil {
+			return fmt.Errorf("decode topic registration: %w", err)
+		}
+		return consumer.applyTopicRegistration(ctx, registration)
+	case websubhub.ModeDeregister:
+		var deregistration websubhub.TopicDeregistration
+		if err := json.Unmarshal(payload, &deregistration); err != nil {
+			return fmt.Errorf("decode topic deregistration: %w", err)
+		}
+		return consumer.applyTopicDeregistration(ctx, deregistration)
+	case websubhub.ModeSubscribe:
+		var subscription websubhub.VerifiedSubscription
+		if err := json.Unmarshal(payload, &subscription); err != nil {
+			return fmt.Errorf("decode verified subscription: %w", err)
+		}
+		return consumer.applySubscription(ctx, subscription)
+	case websubhub.ModeUnsubscribe:
+		var unsubscription websubhub.VerifiedUnsubscription
+		if err := json.Unmarshal(payload, &unsubscription); err != nil {
+			return fmt.Errorf("decode verified unsubscription: %w", err)
+		}
+		return consumer.applyUnsubscription(ctx, unsubscription)
+	default:
+		return fmt.Errorf("unsupported event mode %q", discriminator.Mode)
+	}
 }
 
 func (b *kafkaBroker) Close() {

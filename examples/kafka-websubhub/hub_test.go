@@ -19,6 +19,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,10 +39,10 @@ type queuedUpdate struct {
 
 type fakeBroker struct {
 	mu                sync.Mutex
-	seed              []stateEvent
-	state             []stateEvent
-	events            chan stateEvent
-	appliedEvents     chan stateEvent
+	seed              []any
+	state             []any
+	events            chan any
+	appliedEvents     chan websubhub.Mode
 	eventConsumerGate <-chan struct{}
 	updates           chan queuedUpdate
 	published         chan updateEvent
@@ -49,11 +50,11 @@ type fakeBroker struct {
 	nextID            atomic.Uint64
 }
 
-func newFakeBroker(seed ...stateEvent) *fakeBroker {
+func newFakeBroker(seed ...any) *fakeBroker {
 	return &fakeBroker{
-		seed:          append([]stateEvent(nil), seed...),
-		events:        make(chan stateEvent, 16),
-		appliedEvents: make(chan stateEvent, 16),
+		seed:          append([]any(nil), seed...),
+		events:        make(chan any, 16),
+		appliedEvents: make(chan websubhub.Mode, 16),
 		updates:       make(chan queuedUpdate, 16),
 		published:     make(chan updateEvent, 16),
 		dead:          make(chan deadLetter, 16),
@@ -67,7 +68,23 @@ func newPausedFakeBroker() (*fakeBroker, chan struct{}) {
 	return broker, gate
 }
 
-func (b *fakeBroker) PublishEvent(ctx context.Context, event stateEvent) error {
+func (b *fakeBroker) PublishTopicRegistration(ctx context.Context, registration websubhub.TopicRegistration) error {
+	return b.publishEvent(ctx, registration)
+}
+
+func (b *fakeBroker) PublishTopicDeregistration(ctx context.Context, deregistration websubhub.TopicDeregistration) error {
+	return b.publishEvent(ctx, deregistration)
+}
+
+func (b *fakeBroker) PublishSubscription(ctx context.Context, subscription websubhub.VerifiedSubscription) error {
+	return b.publishEvent(ctx, subscription)
+}
+
+func (b *fakeBroker) PublishUnsubscription(ctx context.Context, unsubscription websubhub.VerifiedUnsubscription) error {
+	return b.publishEvent(ctx, unsubscription)
+}
+
+func (b *fakeBroker) publishEvent(ctx context.Context, event any) error {
 	b.mu.Lock()
 	b.state = append(b.state, event)
 	b.mu.Unlock()
@@ -106,7 +123,7 @@ func (b *fakeBroker) PublishDeadLetter(ctx context.Context, letter deadLetter) e
 
 func (b *fakeBroker) ReplayEvents(ctx context.Context, apply eventConsumer) error {
 	for _, event := range b.seed {
-		if err := apply(ctx, event); err != nil {
+		if err := applyFakeEvent(ctx, event, apply); err != nil {
 			return err
 		}
 	}
@@ -124,11 +141,11 @@ func (b *fakeBroker) ConsumeEvents(ctx context.Context, apply eventConsumer) err
 	for {
 		select {
 		case event := <-b.events:
-			if err := apply(ctx, event); err != nil {
+			if err := applyFakeEvent(ctx, event, apply); err != nil {
 				return err
 			}
 			select {
-			case b.appliedEvents <- event:
+			case b.appliedEvents <- fakeEventMode(event):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -153,18 +170,48 @@ func (b *fakeBroker) ConsumeUpdates(ctx context.Context, consume updateConsumer)
 
 func (b *fakeBroker) Close() {}
 
-func (b *fakeBroker) publishedStateEvents() []stateEvent {
+func (b *fakeBroker) publishedStateEvents() []any {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]stateEvent(nil), b.state...)
+	return append([]any(nil), b.state...)
+}
+
+func applyFakeEvent(ctx context.Context, event any, consumer eventConsumer) error {
+	switch event := event.(type) {
+	case websubhub.TopicRegistration:
+		return consumer.applyTopicRegistration(ctx, event)
+	case websubhub.TopicDeregistration:
+		return consumer.applyTopicDeregistration(ctx, event)
+	case websubhub.VerifiedSubscription:
+		return consumer.applySubscription(ctx, event)
+	case websubhub.VerifiedUnsubscription:
+		return consumer.applyUnsubscription(ctx, event)
+	default:
+		panic("unsupported fake event")
+	}
+}
+
+func fakeEventMode(event any) websubhub.Mode {
+	switch event := event.(type) {
+	case websubhub.TopicRegistration:
+		return event.Mode
+	case websubhub.TopicDeregistration:
+		return event.Mode
+	case websubhub.VerifiedSubscription:
+		return event.Mode
+	case websubhub.VerifiedUnsubscription:
+		return event.Mode
+	default:
+		panic("unsupported fake event")
+	}
 }
 
 func waitForAppliedEvent(t *testing.T, broker *fakeBroker, want websubhub.Mode) {
 	t.Helper()
 	select {
-	case event := <-broker.appliedEvents:
-		if event.Mode != want {
-			t.Fatalf("applied event mode = %q, want %q", event.Mode, want)
+	case mode := <-broker.appliedEvents:
+		if mode != want {
+			t.Fatalf("applied event mode = %q, want %q", mode, want)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for %q event application", want)
@@ -186,7 +233,7 @@ func TestPublishedEventIsAppliedOnlyByConsumer(t *testing.T) {
 		t.Fatal("producer updated in-memory state before the event consumer")
 	}
 	events := broker.publishedStateEvents()
-	if len(events) != 1 || events[0].Mode != websubhub.ModeRegister {
+	if len(events) != 1 || fakeEventMode(events[0]) != websubhub.ModeRegister {
 		t.Fatalf("published events = %+v", events)
 	}
 
@@ -194,6 +241,46 @@ func TestPublishedEventIsAppliedOnlyByConsumer(t *testing.T) {
 	waitForAppliedEvent(t, broker, websubhub.ModeRegister)
 	if !hub.hasTopic(topic) {
 		t.Fatal("event consumer did not update in-memory state")
+	}
+}
+
+func TestConcreteSubscriptionEventIsDecodedWithoutEnvelope(t *testing.T) {
+	leaseStarted := time.Date(2026, time.August, 19, 10, 30, 0, 0, time.UTC)
+	verified := websubhub.VerifiedSubscription{
+		Subscription: websubhub.Subscription{
+			Hub:      "http://hub.example/hub",
+			Mode:     websubhub.ModeSubscribe,
+			Topic:    "http://publisher.example/topics/orders",
+			Callback: "http://subscriber.example/callback",
+			Secret:   "secret",
+		},
+		EffectiveLeaseSeconds: "300",
+		LeaseStartedAt:        leaseStarted,
+	}
+	payload, err := json.Marshal(verified)
+	if err != nil {
+		t.Fatalf("encode verified subscription: %v", err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatalf("inspect verified subscription JSON: %v", err)
+	}
+	if _, exists := object["Subscription"]; exists {
+		t.Fatalf("verified subscription was wrapped in a Subscription envelope: %s", payload)
+	}
+
+	hub := &kafkaHub{
+		topics:      make(map[string]struct{}),
+		subscribers: make(map[string]map[string]storedSubscription),
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if err := applyEvent(context.Background(), payload, hub); err != nil {
+		t.Fatalf("apply verified subscription: %v", err)
+	}
+	stored := hub.subscribers[verified.Topic][verified.Callback]
+	wantExpiry := leaseStarted.Add(300 * time.Second)
+	if !stored.expiresAt.Equal(wantExpiry) {
+		t.Fatalf("subscription expiry = %s, want %s", stored.expiresAt, wantExpiry)
 	}
 }
 
@@ -216,14 +303,18 @@ func TestStateReplayAndKafkaDelivery(t *testing.T) {
 	topic := "http://publisher.example/topics/orders"
 	secret := "broker-secret"
 	broker := newFakeBroker(
-		stateEvent{Mode: websubhub.ModeRegister, Topic: topic},
-		stateEvent{Mode: websubhub.ModeSubscribe, Topic: topic, Subscription: &persistedSubscription{
-			Hub:       "http://hub.example/hub",
-			Topic:     topic,
-			Callback:  callback.URL,
-			Secret:    secret,
-			ExpiresAt: time.Now().Add(time.Hour),
-		}},
+		websubhub.TopicRegistration{Mode: websubhub.ModeRegister, Topic: topic},
+		websubhub.VerifiedSubscription{
+			Subscription: websubhub.Subscription{
+				Hub:      "http://hub.example/hub",
+				Mode:     websubhub.ModeSubscribe,
+				Topic:    topic,
+				Callback: callback.URL,
+				Secret:   secret,
+			},
+			EffectiveLeaseSeconds: "3600",
+			LeaseStartedAt:        time.Now(),
+		},
 	)
 	hub := newTestHub(t, broker)
 	payload := []byte(`{"order":"A-42"}`)
@@ -309,8 +400,8 @@ func TestStateChangesArePublishedAndApplied(t *testing.T) {
 		t.Fatalf("published event count = %d, want %d", len(events), len(wantModes))
 	}
 	for index, want := range wantModes {
-		if events[index].Mode != want {
-			t.Errorf("published event %d mode = %q, want %q", index, events[index].Mode, want)
+		if got := fakeEventMode(events[index]); got != want {
+			t.Errorf("published event %d mode = %q, want %q", index, got, want)
 		}
 	}
 }
@@ -325,13 +416,17 @@ func TestDeliveryExhaustionPublishesDeadLetter(t *testing.T) {
 
 	topic := "http://publisher.example/topics/retry"
 	broker := newFakeBroker(
-		stateEvent{Mode: websubhub.ModeRegister, Topic: topic},
-		stateEvent{Mode: websubhub.ModeSubscribe, Topic: topic, Subscription: &persistedSubscription{
-			Hub:       "http://hub.example/hub",
-			Topic:     topic,
-			Callback:  callback.URL,
-			ExpiresAt: time.Now().Add(time.Hour),
-		}},
+		websubhub.TopicRegistration{Mode: websubhub.ModeRegister, Topic: topic},
+		websubhub.VerifiedSubscription{
+			Subscription: websubhub.Subscription{
+				Hub:      "http://hub.example/hub",
+				Mode:     websubhub.ModeSubscribe,
+				Topic:    topic,
+				Callback: callback.URL,
+			},
+			EffectiveLeaseSeconds: "3600",
+			LeaseStartedAt:        time.Now(),
+		},
 	)
 	hub := newTestHub(t, broker)
 	if _, err := hub.onUpdateMessage(context.Background(), websubhub.UpdateMessage{
@@ -366,7 +461,7 @@ func TestEventNotificationIsMaterializedBeforeKafka(t *testing.T) {
 	}))
 	defer topicServer.Close()
 
-	broker := newFakeBroker(stateEvent{Mode: websubhub.ModeRegister, Topic: topicServer.URL})
+	broker := newFakeBroker(websubhub.TopicRegistration{Mode: websubhub.ModeRegister, Topic: topicServer.URL})
 	hub := newTestHub(t, broker)
 	if _, err := hub.onUpdateMessage(context.Background(), websubhub.UpdateMessage{
 		Kind:  websubhub.UpdateEvent,

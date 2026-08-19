@@ -44,21 +44,6 @@ type hubOptions struct {
 	logger           *slog.Logger
 }
 
-type persistedSubscription struct {
-	Hub       string    `json:"hub"`
-	Topic     string    `json:"topic"`
-	Callback  string    `json:"callback"`
-	Secret    string    `json:"secret,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type stateEvent struct {
-	Mode         websubhub.Mode         `json:"mode"`
-	Topic        string                 `json:"topic"`
-	Callback     string                 `json:"callback,omitempty"`
-	Subscription *persistedSubscription `json:"subscription,omitempty"`
-}
-
 type updateEvent struct {
 	Topic       string `json:"topic"`
 	ContentType string `json:"content_type"`
@@ -150,7 +135,7 @@ func newKafkaHub(startupContext context.Context, options hubOptions) (*kafkaHub,
 		done:             make(chan struct{}),
 		errors:           make(chan error, 1),
 	}
-	if err := hub.broker.ReplayEvents(startupContext, hub.applyEvent); err != nil {
+	if err := hub.broker.ReplayEvents(startupContext, hub); err != nil {
 		cancel()
 		hub.broker.Close()
 		return nil, err
@@ -158,7 +143,7 @@ func newKafkaHub(startupContext context.Context, options hubOptions) (*kafkaHub,
 
 	hub.workers.Add(2)
 	go hub.runWorker("event consumer", func() error {
-		return hub.broker.ConsumeEvents(hub.ctx, hub.applyEvent)
+		return hub.broker.ConsumeEvents(hub.ctx, hub)
 	})
 	go hub.runWorker("update consumer", func() error {
 		return hub.broker.ConsumeUpdates(hub.ctx, hub.consumeUpdate)
@@ -203,8 +188,7 @@ func (h *kafkaHub) onRegisterTopic(ctx context.Context, registration websubhub.T
 	if h.hasTopic(registration.Topic) {
 		return websubhub.Result{}, &websubhub.DeniedError{Reason: "topic is already registered"}
 	}
-	event := stateEvent{Mode: websubhub.ModeRegister, Topic: registration.Topic}
-	if err := h.publishEvent(ctx, event); err != nil {
+	if err := h.broker.PublishTopicRegistration(ctx, registration); err != nil {
 		return websubhub.Result{}, err
 	}
 	h.logger.Info("topic registration event published", "topic", registration.Topic)
@@ -217,8 +201,7 @@ func (h *kafkaHub) onDeregisterTopic(ctx context.Context, deregistration websubh
 	if !h.hasTopic(deregistration.Topic) {
 		return websubhub.Result{}, &websubhub.DeniedError{Reason: "topic is not registered"}
 	}
-	event := stateEvent{Mode: websubhub.ModeDeregister, Topic: deregistration.Topic}
-	if err := h.publishEvent(ctx, event); err != nil {
+	if err := h.broker.PublishTopicDeregistration(ctx, deregistration); err != nil {
 		return websubhub.Result{}, err
 	}
 	h.logger.Info("topic deregistration event published", "topic", deregistration.Topic)
@@ -257,18 +240,7 @@ func (h *kafkaHub) onSubscriptionVerified(ctx context.Context, verified websubhu
 	if !h.hasTopic(verified.Topic) {
 		return &websubhub.DeniedError{Reason: "topic is not registered"}
 	}
-	event := stateEvent{
-		Mode:  websubhub.ModeSubscribe,
-		Topic: verified.Topic,
-		Subscription: &persistedSubscription{
-			Hub:       verified.Hub,
-			Topic:     verified.Topic,
-			Callback:  verified.Callback,
-			Secret:    verified.Secret,
-			ExpiresAt: verified.LeaseStartedAt.Add(time.Duration(leaseSeconds) * time.Second),
-		},
-	}
-	if err := h.publishEvent(ctx, event); err != nil {
+	if err := h.broker.PublishSubscription(ctx, verified); err != nil {
 		return err
 	}
 	h.logger.Info("subscription event published", "topic", verified.Topic, "lease_seconds", leaseSeconds)
@@ -288,67 +260,71 @@ func (h *kafkaHub) onUnsubscriptionValidation(_ context.Context, unsubscription 
 func (h *kafkaHub) onUnsubscriptionVerified(ctx context.Context, verified websubhub.VerifiedUnsubscription, _ websubhub.RequestMetadata) error {
 	h.operationMu.Lock()
 	defer h.operationMu.Unlock()
-	event := stateEvent{Mode: websubhub.ModeUnsubscribe, Topic: verified.Topic, Callback: verified.Callback}
-	if err := h.publishEvent(ctx, event); err != nil {
+	if err := h.broker.PublishUnsubscription(ctx, verified); err != nil {
 		return err
 	}
 	h.logger.Info("unsubscription event published", "topic", verified.Topic)
 	return nil
 }
 
-func (h *kafkaHub) publishEvent(ctx context.Context, event stateEvent) error {
-	return h.broker.PublishEvent(ctx, event)
-}
-
-func (h *kafkaHub) applyEvent(_ context.Context, event stateEvent) error {
+func (h *kafkaHub) applyTopicRegistration(_ context.Context, registration websubhub.TopicRegistration) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	switch event.Mode {
-	case websubhub.ModeRegister:
-		if event.Topic == "" {
-			return errors.New("register state event has no topic")
-		}
-		h.topics[event.Topic] = struct{}{}
-	case websubhub.ModeDeregister:
-		if event.Topic == "" {
-			return errors.New("deregister state event has no topic")
-		}
-		delete(h.topics, event.Topic)
-		delete(h.subscribers, event.Topic)
-	case websubhub.ModeSubscribe:
-		if event.Subscription == nil || event.Subscription.Topic == "" || event.Subscription.Callback == "" || event.Subscription.Hub == "" {
-			return errors.New("subscribe state event is incomplete")
-		}
-		h.nextVersion++
-		byCallback := h.subscribers[event.Subscription.Topic]
-		if byCallback == nil {
-			byCallback = make(map[string]storedSubscription)
-			h.subscribers[event.Subscription.Topic] = byCallback
-		}
-		byCallback[event.Subscription.Callback] = storedSubscription{
-			subscription: websubhub.Subscription{
-				Hub:      event.Subscription.Hub,
-				Mode:     websubhub.ModeSubscribe,
-				Topic:    event.Subscription.Topic,
-				Callback: event.Subscription.Callback,
-				Secret:   event.Subscription.Secret,
-			},
-			expiresAt: event.Subscription.ExpiresAt,
-			version:   h.nextVersion,
-		}
-	case websubhub.ModeUnsubscribe:
-		if event.Topic == "" || event.Callback == "" {
-			return errors.New("unsubscribe state event is incomplete")
-		}
-		byCallback := h.subscribers[event.Topic]
-		delete(byCallback, event.Callback)
-		if len(byCallback) == 0 {
-			delete(h.subscribers, event.Topic)
-		}
-	default:
-		return fmt.Errorf("unsupported state event mode %q", event.Mode)
+	if registration.Mode != websubhub.ModeRegister || registration.Topic == "" {
+		return errors.New("invalid topic registration event")
 	}
-	h.logger.Info("state event applied", "mode", event.Mode, "topic", event.Topic)
+	h.topics[registration.Topic] = struct{}{}
+	h.logger.Info("state event applied", "mode", registration.Mode, "topic", registration.Topic)
+	return nil
+}
+
+func (h *kafkaHub) applyTopicDeregistration(_ context.Context, deregistration websubhub.TopicDeregistration) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if deregistration.Mode != websubhub.ModeDeregister || deregistration.Topic == "" {
+		return errors.New("invalid topic deregistration event")
+	}
+	delete(h.topics, deregistration.Topic)
+	delete(h.subscribers, deregistration.Topic)
+	h.logger.Info("state event applied", "mode", deregistration.Mode, "topic", deregistration.Topic)
+	return nil
+}
+
+func (h *kafkaHub) applySubscription(_ context.Context, verified websubhub.VerifiedSubscription) error {
+	leaseSeconds, err := strconv.ParseInt(verified.EffectiveLeaseSeconds, 10, 64)
+	if err != nil || leaseSeconds <= 0 || verified.Mode != websubhub.ModeSubscribe || verified.Topic == "" || verified.Callback == "" || verified.Hub == "" || verified.LeaseStartedAt.IsZero() {
+		return errors.New("invalid verified subscription event")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.nextVersion++
+	byCallback := h.subscribers[verified.Topic]
+	if byCallback == nil {
+		byCallback = make(map[string]storedSubscription)
+		h.subscribers[verified.Topic] = byCallback
+	}
+	byCallback[verified.Callback] = storedSubscription{
+		subscription: verified.Subscription,
+		expiresAt:    verified.LeaseStartedAt.Add(time.Duration(leaseSeconds) * time.Second),
+		version:      h.nextVersion,
+	}
+	h.logger.Info("state event applied", "mode", verified.Mode, "topic", verified.Topic)
+	return nil
+}
+
+func (h *kafkaHub) applyUnsubscription(_ context.Context, verified websubhub.VerifiedUnsubscription) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if verified.Mode != websubhub.ModeUnsubscribe || verified.Topic == "" || verified.Callback == "" {
+		return errors.New("invalid verified unsubscription event")
+	}
+	byCallback := h.subscribers[verified.Topic]
+	delete(byCallback, verified.Callback)
+	if len(byCallback) == 0 {
+		delete(h.subscribers, verified.Topic)
+	}
+	h.logger.Info("state event applied", "mode", verified.Mode, "topic", verified.Topic)
 	return nil
 }
 
@@ -443,7 +419,13 @@ func (h *kafkaHub) removeGone(ctx context.Context, topic, callback string, versi
 	if !exists || stored.version != version {
 		return nil
 	}
-	return h.publishEvent(ctx, stateEvent{Mode: websubhub.ModeUnsubscribe, Topic: topic, Callback: callback})
+	return h.broker.PublishUnsubscription(ctx, websubhub.VerifiedUnsubscription{
+		Unsubscription: websubhub.Unsubscription{
+			Mode:     websubhub.ModeUnsubscribe,
+			Topic:    topic,
+			Callback: callback,
+		},
+	})
 }
 
 func (h *kafkaHub) activeSubscriptions(topic string, now time.Time) []storedSubscription {
