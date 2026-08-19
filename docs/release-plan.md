@@ -183,7 +183,9 @@ Conventional Commit history. The release pull request selects the next version,
 updates `CHANGELOG.md`, and records the version in
 `.release-please-manifest.json`; merging ordinary changes does not publish a
 release. While the module is below v1, a breaking change advances the minor
-version rather than declaring the API stable.
+version rather than declaring the API stable. The initial automated release is
+explicitly configured as v0.1.0 because the Go release strategy otherwise
+defaults a repository without previous releases to v1.0.0.
 
 Commit and squash-merge subjects use Conventional Commit prefixes. `fix:`
 selects a patch, `feat:` selects a minor version, and a `!` or
