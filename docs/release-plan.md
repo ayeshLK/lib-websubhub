@@ -190,10 +190,13 @@ selects a patch, `feat:` selects a minor version, and a `!` or
 `BREAKING CHANGE:` footer marks an incompatible change. Maintainers review the
 proposed version and release notes before merging the release pull request.
 
-The preparation action uses the built-in `GITHUB_TOKEN` by default. Configure a
-fine-grained `RELEASE_PLEASE_TOKEN` with repository contents and pull-request
-write access when CI must run automatically on the generated pull request;
-GitHub suppresses workflow events caused by its built-in token.
+The preparation action uses the built-in `GITHUB_TOKEN` by default. Repository
+Settings > Actions > General must allow GitHub Actions to create and approve
+pull requests; only workflows that also declare `pull-requests: write` receive
+that capability. If generated release pull requests must trigger CI
+automatically, configure a fine-grained `RELEASE_PLEASE_TOKEN` with repository
+contents and pull-request write access, because GitHub suppresses workflow
+events caused by its built-in token.
 
 `release.yml` remains manually initiated with `workflow_dispatch`, but no longer
 accepts a version input. It reads the reviewed version from the manifest and
