@@ -20,6 +20,8 @@ introduces invariants that compilation and constructor validation cannot express
 The release gate requires:
 
 - at least **85% statement coverage** for the framework package;
+- no reduction in total project coverage relative to the pull request base;
+- at least **85% coverage** of lines changed by a pull request;
 - complete coverage of the protocol-critical matrix below;
 - complete coverage of the documented handler, client, and extension behavior;
 - race, fuzz, cancellation, and lifecycle testing.
@@ -191,12 +193,21 @@ go test -covermode=atomic -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out
 ```
 
+CI enforces the absolute 85% statement floor before uploading `coverage.out` to
+Codecov through GitHub OIDC. The blocking `codecov/project` status compares total
+coverage with the pull request base and permits no decrease. The blocking
+`codecov/patch` status requires at least 85% coverage of changed lines. The
+default-branch ruleset must require `Coverage`, `codecov/project`, and
+`codecov/patch`.
+
 Scheduled jobs run bounded fuzz campaigns and cross-platform tests on the two
 supported Go major versions.
 
 No release is allowed with:
 
 - statement coverage below 85%;
+- total coverage lower than the pull request base;
+- changed-line coverage below 85%;
 - an uncovered protocol-critical matrix row;
 - race reports, leaked workers, or timing-sleep-dependent tests;
 - an external core-module dependency;
