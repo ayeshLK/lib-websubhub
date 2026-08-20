@@ -192,32 +192,20 @@ caller-supplied `http.Client` values.
 
 Read the [security policy](SECURITY.md) and
 [normative framework specification](docs/spec.md) before exposing a hub to
-untrusted networks. The specification documents the remaining W3C conformance
-gaps and the optional publisher extension boundary.
+untrusted networks. The specification documents the W3C conformance and
+ownership boundaries and the optional publisher extension.
 
 ## Documentation
 
 - [Framework specification](docs/spec.md)
-- [Testing and coverage plan](docs/testing-plan.md)
-- [Release and compatibility plan](docs/release-plan.md)
+- [Contributor guide](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 - [Go API reference](https://pkg.go.dev/github.com/ayeshLK/lib-websubhub)
 
 ## Development
 
-Run the core validation suite from the repository root:
-
-```sh
-gofmt -w *.go
-go mod tidy
-go vet ./...
-go test -shuffle=on ./...
-go test -race ./...
-go test -cover ./...
-```
-
-Each example is an independent Go module. Run its commands from the example
-directory so example-only dependencies never enter the core module graph.
+See the [contributor guide](CONTRIBUTING.md) for validation commands, coverage
+gates, example-module checks, and the release process.
 
 ## License
 

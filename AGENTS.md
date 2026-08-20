@@ -12,19 +12,19 @@ explicit task scope. Deliberate API changes require coordinated specification,
 test, documentation, and `CHANGELOG.md` updates.
 
 This package is not a complete hub product and must not claim standalone W3C hub
-or subscriber conformance while the gaps in `docs/spec.md` remain.
+or subscriber conformance while the application responsibilities in
+`docs/spec.md` remain unsupplied.
 
 ## Authority and reading order
 
 Before changing code, read the documents relevant to the task:
 
 1. `README.md` for the public project overview and basic usage.
-2. `docs/spec.md` for the normative API, protocol behavior, ownership boundary,
-   security limitations, and W3C gap analysis.
-3. `docs/testing-plan.md` for required cases and the coverage gate.
+2. `CONTRIBUTING.md` for validation, coverage, change, and release workflows.
+3. `docs/spec.md` for the normative API, protocol behavior, ownership boundary,
+   security limitations, and W3C conformance and ownership analysis.
 4. `SECURITY.md` and specification Section 14 for security-sensitive work.
-5. `docs/release-plan.md` for Go compatibility, CI, versioning, or release work.
-6. The README and tests of each affected example module.
+5. The README and tests of each affected example module.
 
 `docs/spec.md` is the repository's normative framework contract. If code, tests,
 and the specification disagree, do not silently choose one: identify the
@@ -37,6 +37,7 @@ them.
 
 ## Repository map
 
+- `CONTRIBUTING.md`: human contributor validation and release workflow.
 - `handler.go`: inbound HTTP parsing, dispatch, verification queue, and handler
   lifecycle.
 - `service.go`: application callbacks, modes, metadata, and result types.
@@ -53,8 +54,7 @@ them.
 - `examples/kafka-websubhub/`: runnable Kafka-backed hub in an independent Go
   module, using an application-owned state log, per-topic content logs, and
   per-subscription consumers.
-- `docs/`: specification and implementation, testing, documentation, and
-  release plans.
+- `docs/spec.md`: normative framework contract and conformance analysis.
 - `.github/workflows/`: pull-request validation, release preparation, and
   manually approved publication automation.
 
@@ -239,9 +239,9 @@ go tool cover -func=coverage.out
 ```
 
 Statement coverage must remain at least 85%, but coverage alone does not replace
-the protocol-critical matrix in `docs/testing-plan.md`. If race testing cannot
-run because CGO or a C compiler is unavailable, report that limitation rather
-than claiming it passed. Do not commit `coverage.out`.
+explicit assertions for every affected protocol-critical behavior. If race
+testing cannot run because CGO or a C compiler is unavailable, report that
+limitation rather than claiming it passed. Do not commit `coverage.out`.
 
 For documentation-only changes, run `git diff --check`, verify local links and
 commands, and run tests when code snippets, exported names, module paths, or
@@ -275,7 +275,8 @@ For API, protocol, or security changes:
 
 - update `docs/spec.md`, relevant tests, README usage, and `CHANGELOG.md` in the
   same change;
-- update `docs/testing-plan.md` when the behavior matrix changes;
+- preserve or extend protocol-critical behavioral coverage when the contract
+  changes;
 - add table-driven boundary cases and a regression test for every fixed defect;
 - test enabled and disabled publisher-extension configurations when relevant.
 
