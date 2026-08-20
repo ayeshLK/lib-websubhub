@@ -21,25 +21,40 @@ import (
 )
 
 var (
-	ErrInvalidRequest               = errors.New("websubhub: invalid request")
-	ErrDenied                       = errors.New("websubhub: denied")
-	ErrVerificationFailed           = errors.New("websubhub: verification failed")
-	ErrSubscriptionGone             = errors.New("websubhub: subscription gone")
-	ErrDeliveryFailed               = errors.New("websubhub: delivery failed")
-	ErrPublisherFailed              = errors.New("websubhub: publisher request failed")
-	ErrQueueFull                    = errors.New("websubhub: verification queue full")
-	ErrClosed                       = errors.New("websubhub: closed")
+	// ErrInvalidRequest classifies malformed input or invalid configuration.
+	ErrInvalidRequest = errors.New("websubhub: invalid request")
+	// ErrDenied classifies an application-denied operation.
+	ErrDenied = errors.New("websubhub: denied")
+	// ErrVerificationFailed classifies subscriber callback verification failure.
+	ErrVerificationFailed = errors.New("websubhub: verification failed")
+	// ErrSubscriptionGone classifies an HTTP 410 subscriber response.
+	ErrSubscriptionGone = errors.New("websubhub: subscription gone")
+	// ErrDeliveryFailed classifies content delivery failure.
+	ErrDeliveryFailed = errors.New("websubhub: delivery failed")
+	// ErrPublisherFailed classifies publisher-extension request failure.
+	ErrPublisherFailed = errors.New("websubhub: publisher request failed")
+	// ErrQueueFull reports that bounded verification work cannot be accepted.
+	ErrQueueFull = errors.New("websubhub: verification queue full")
+	// ErrClosed reports admission attempted after Handler.Close.
+	ErrClosed = errors.New("websubhub: closed")
+	// ErrExternalVerificationDisabled reports disabled Controller.MarkVerified use.
 	ErrExternalVerificationDisabled = errors.New("websubhub: external verification disabled")
-	ErrAlreadyVerified              = errors.New("websubhub: already marked verified")
+	// ErrAlreadyVerified reports repeated Controller.MarkVerified use.
+	ErrAlreadyVerified = errors.New("websubhub: already marked verified")
 )
 
 // HTTPError describes a bounded, safe non-success HTTP response.
 type HTTPError struct {
-	Operation  string
+	// Operation identifies the outbound protocol operation.
+	Operation string
+	// StatusCode is the remote HTTP status, or zero when no response was received.
 	StatusCode int
-	Header     http.Header
-	Body       []byte
-	Err        error
+	// Header is a detached copy of the response headers.
+	Header http.Header
+	// Body is a bounded, detached copy of the response body.
+	Body []byte
+	// Err is the sentinel error used for errors.Is classification.
+	Err error
 }
 
 func (e *HTTPError) Error() string {
@@ -63,8 +78,10 @@ func (e *HTTPError) Unwrap() error {
 // DeniedError asks the handler to notify the subscriber that validation failed.
 // Reason must be safe to disclose to the callback endpoint.
 type DeniedError struct {
+	// Reason is a short, non-sensitive explanation safe for the subscriber.
 	Reason string
-	Err    error
+	// Err is the optional application cause and must not contain secrets.
+	Err error
 }
 
 func (e *DeniedError) Error() string {
@@ -89,8 +106,10 @@ func (e *DeniedError) Is(target error) bool {
 
 // RedirectError requests a temporary redirect from an initial subscription callback.
 type RedirectError struct {
+	// StatusCode must be HTTP 307 or 308.
 	StatusCode int
-	Location   string
+	// Location is the redirect target returned to the subscriber.
+	Location string
 }
 
 func (e *RedirectError) Error() string {

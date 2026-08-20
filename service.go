@@ -27,104 +27,160 @@ import (
 type Mode string
 
 const (
-	ModeSubscribe   Mode = "subscribe"
+	// ModeSubscribe requests or represents a WebSub subscription.
+	ModeSubscribe Mode = "subscribe"
+	// ModeUnsubscribe requests or represents a WebSub unsubscription.
 	ModeUnsubscribe Mode = "unsubscribe"
-	ModeRegister    Mode = "register"
-	ModeDeregister  Mode = "deregister"
-	ModePublish     Mode = "publish"
+	// ModeRegister is the optional publisher-extension topic registration mode.
+	ModeRegister Mode = "register"
+	// ModeDeregister is the optional publisher-extension topic deregistration mode.
+	ModeDeregister Mode = "deregister"
+	// ModePublish is the optional publisher-extension update mode.
+	ModePublish Mode = "publish"
 )
 
 // UpdateKind distinguishes a content notification from an event-only notice.
 type UpdateKind uint8
 
 const (
+	// UpdateEvent asks the application to fetch the current topic representation.
 	UpdateEvent UpdateKind = iota
+	// UpdateContent carries an exact publisher-supplied representation.
 	UpdateContent
 )
 
-// Config controls protocol behavior owned by Handler.
+// Config controls protocol behavior owned by Handler. Zero values select
+// bounded package defaults unless a field says otherwise.
 type Config struct {
-	HubURL              string
-	DefaultLease        time.Duration
-	MaxLease            time.Duration
-	MaxRequestBody      int64
-	MaxCallbackBody     int64
+	// HubURL is the public absolute HTTP(S) URL subscribers use for this hub.
+	HubURL string
+	// DefaultLease applies when a subscription omits hub.lease_seconds.
+	DefaultLease time.Duration
+	// MaxLease caps requested and default subscription leases.
+	MaxLease time.Duration
+	// MaxRequestBody bounds inbound hub request bodies in bytes.
+	MaxRequestBody int64
+	// MaxCallbackBody bounds intent-verification and status callback responses.
+	MaxCallbackBody int64
+	// VerificationTimeout bounds each outbound verification operation.
 	VerificationTimeout time.Duration
+	// VerificationWorkers is the fixed asynchronous verification worker count.
 	VerificationWorkers int
-	VerificationQueue   int
-	HTTPClient          *http.Client
-	Logger              *slog.Logger
+	// VerificationQueue is the maximum queued verification job count.
+	VerificationQueue int
+	// HTTPClient supplies outbound transport settings. It is copied, never mutated,
+	// and configured to refuse redirects.
+	HTTPClient *http.Client
+	// Logger receives secret-safe lifecycle messages. Nil disables logging.
+	Logger *slog.Logger
 
+	// AllowExternalVerification enables Controller.MarkVerified during admission.
 	AllowExternalVerification bool
-	EnablePublisherExtension  bool
-	EnableHubErrorCallback    bool
+	// EnablePublisherExtension enables non-standard publisher operations.
+	EnablePublisherExtension bool
+	// EnableHubErrorCallback sends hub-error status after unexpected asynchronous
+	// validation or verified-callback failures.
+	EnableHubErrorCallback bool
 }
 
-// RequestMetadata is an immutable snapshot of relevant inbound HTTP metadata.
+// RequestMetadata is a detached snapshot of relevant inbound HTTP metadata.
 type RequestMetadata struct {
-	Header     http.Header
+	// Header is a detached copy of the inbound request headers.
+	Header http.Header
+	// RemoteAddr is the inbound request's network address.
 	RemoteAddr string
 }
 
-// Result customizes an HTTP response produced for an initial callback.
+// Result customizes the synchronous HTTP response produced by an admission or
+// publisher-extension callback. Its mutable fields are copied before use.
 type Result struct {
-	StatusCode  int
-	Header      http.Header
+	// StatusCode selects the response status; zero uses the operation default.
+	StatusCode int
+	// Header supplies additional response headers, subject to safety validation.
+	Header http.Header
+	// ContentType supplies the response media type when Body is present.
 	ContentType string
-	Body        []byte
+	// Body supplies exact response bytes.
+	Body []byte
 }
 
-// TopicRegistration describes the optional register operation.
+// TopicRegistration describes an optional publisher-extension registration.
 type TopicRegistration struct {
-	Mode  Mode
+	// Mode is ModeRegister.
+	Mode Mode
+	// Topic is the absolute HTTP(S) topic URL.
 	Topic string
 }
 
-// TopicDeregistration describes the optional deregister operation.
+// TopicDeregistration describes an optional publisher-extension deregistration.
 type TopicDeregistration struct {
-	Mode  Mode
+	// Mode is ModeDeregister.
+	Mode Mode
+	// Topic is the absolute HTTP(S) topic URL.
 	Topic string
 }
 
-// Subscription describes a subscriber's requested subscription.
+// Subscription describes a subscriber's requested subscription. Mutable values
+// are detached from the inbound request before callbacks receive them.
 type Subscription struct {
-	Hub          string
-	Mode         Mode
-	Callback     string
-	Topic        string
+	// Hub is the configured public hub URL.
+	Hub string
+	// Mode is ModeSubscribe.
+	Mode Mode
+	// Callback is the absolute HTTP(S) subscriber callback URL.
+	Callback string
+	// Topic is the absolute HTTP(S) topic URL.
+	Topic string
+	// LeaseSeconds is the optional hub.lease_seconds form value.
 	LeaseSeconds string
-	Secret       string
-	Parameters   url.Values
+	// Secret is the optional hub.secret form value and must remain confidential.
+	Secret string
+	// Parameters contains detached, non-standard form parameters.
+	Parameters url.Values
 }
 
 // VerifiedSubscription describes successfully verified subscription intent.
 type VerifiedSubscription struct {
 	Subscription
+	// EffectiveLeaseSeconds is the granted lease after defaults and caps.
 	EffectiveLeaseSeconds string
-	LeaseStartedAt        time.Time
+	// LeaseStartedAt records when verification work selected the effective lease.
+	LeaseStartedAt time.Time
 }
 
 // Unsubscription describes a subscriber's requested unsubscription.
 type Unsubscription struct {
-	Mode       Mode
-	Callback   string
-	Topic      string
-	Secret     string
+	// Mode is ModeUnsubscribe.
+	Mode Mode
+	// Callback is the absolute HTTP(S) subscriber callback URL.
+	Callback string
+	// Topic is the absolute HTTP(S) topic URL.
+	Topic string
+	// Secret is the optional hub.secret form value and must remain confidential.
+	Secret string
+	// Parameters contains detached, non-standard form parameters.
 	Parameters url.Values
 }
 
-// VerifiedUnsubscription describes successfully verified unsubscription intent.
+// VerifiedUnsubscription describes successfully verified unsubscription
+// intent. Any submitted lease value was accepted and ignored before this value
+// was constructed.
 type VerifiedUnsubscription struct {
 	Unsubscription
 }
 
 // UpdateMessage is publisher content or an event-only update notification.
 type UpdateMessage struct {
-	Kind        UpdateKind
-	Topic       string
+	// Kind distinguishes exact content from an event-only notification.
+	Kind UpdateKind
+	// Topic is the absolute HTTP(S) topic URL.
+	Topic string
+	// ContentType is the complete publisher media type for UpdateContent.
 	ContentType string
-	Body        []byte
-	Header      http.Header
+	// Body contains exact publisher bytes for UpdateContent.
+	Body []byte
+	// Header is a detached copy of publisher request headers.
+	Header http.Header
 }
 
 // RegisterTopicFunc handles the publisher registration extension.
@@ -154,19 +210,33 @@ type UnsubscriptionValidationFunc func(context.Context, Unsubscription, RequestM
 // UnsubscriptionVerifiedFunc receives successfully verified unsubscription intent.
 type UnsubscriptionVerifiedFunc func(context.Context, VerifiedUnsubscription, RequestMetadata) error
 
-// Service contains application callbacks. All callbacks must be concurrency-safe.
+// Service contains application callbacks. All callbacks may run concurrently
+// and must be concurrency-safe.
 type Service struct {
-	OnRegisterTopic   RegisterTopicFunc
+	// OnRegisterTopic handles optional publisher-extension topic registration.
+	OnRegisterTopic RegisterTopicFunc
+	// OnDeregisterTopic handles optional publisher-extension topic deregistration.
 	OnDeregisterTopic DeregisterTopicFunc
-	OnUpdateMessage   UpdateMessageFunc
+	// OnUpdateMessage handles optional publisher content and event notifications.
+	OnUpdateMessage UpdateMessageFunc
 
-	OnSubscription           SubscriptionFunc
+	// OnSubscription makes the synchronous subscription admission decision. Nil
+	// accepts a valid request using the default response.
+	OnSubscription SubscriptionFunc
+	// OnSubscriptionValidation performs asynchronous application validation.
 	OnSubscriptionValidation SubscriptionValidationFunc
-	OnSubscriptionVerified   SubscriptionVerifiedFunc
+	// OnSubscriptionVerified persists successfully verified subscription state.
+	// It is required.
+	OnSubscriptionVerified SubscriptionVerifiedFunc
 
-	OnUnsubscription           UnsubscriptionFunc
+	// OnUnsubscription makes the synchronous unsubscription admission decision.
+	// Nil accepts a valid request using the default response.
+	OnUnsubscription UnsubscriptionFunc
+	// OnUnsubscriptionValidation performs asynchronous application validation.
 	OnUnsubscriptionValidation UnsubscriptionValidationFunc
-	OnUnsubscriptionVerified   UnsubscriptionVerifiedFunc
+	// OnUnsubscriptionVerified removes successfully verified subscription state.
+	// It is required.
+	OnUnsubscriptionVerified UnsubscriptionVerifiedFunc
 }
 
 // Controller controls explicitly enabled external intent verification.

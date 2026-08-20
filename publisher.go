@@ -27,12 +27,17 @@ const HeaderGoPublisher = publisherHeader
 
 // PublisherClientConfig controls publisher extension requests.
 type PublisherClientConfig struct {
-	HubURL          string
-	HTTPClient      *http.Client
+	// HubURL is the absolute HTTP(S) endpoint of an extension-enabled hub.
+	HubURL string
+	// HTTPClient supplies transport settings. It is copied, never mutated, and
+	// configured to refuse redirects.
+	HTTPClient *http.Client
+	// MaxResponseBody bounds publisher-operation response bodies in bytes.
 	MaxResponseBody int64
 }
 
-// PublisherClient invokes the optional publisher extension.
+// PublisherClient invokes the optional, non-standard publisher extension.
+// It is safe for concurrent use after construction.
 type PublisherClient struct {
 	hubURL  string
 	client  *http.Client
@@ -40,6 +45,7 @@ type PublisherClient struct {
 }
 
 // NewPublisherClient validates and snapshots publisher transport settings.
+// It does not mutate config.HTTPClient.
 func NewPublisherClient(config PublisherClientConfig) (*PublisherClient, error) {
 	if _, err := validateHTTPURL(config.HubURL, "HubURL", true, true); err != nil {
 		return nil, err

@@ -18,6 +18,7 @@ All notable changes to this project will be documented here. The project uses
   `Config.toml` files instead of command-line flags.
 - Persist a stable hub `server_id` with each subscription and start delivery
   workers only on the owning hub instance.
+- Improve repository discovery, README onboarding, and Go API documentation.
 
 ### Fixed
 
