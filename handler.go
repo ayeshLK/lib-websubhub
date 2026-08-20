@@ -41,7 +41,8 @@ type verificationJob struct {
 	verified bool
 }
 
-// Handler adapts WebSub HTTP requests to application callbacks.
+// Handler adapts WebSub HTTP requests to application callbacks. It implements
+// http.Handler and is safe for concurrent use.
 type Handler struct {
 	config  Config
 	service Service
@@ -60,7 +61,10 @@ type Handler struct {
 	closeDone   chan struct{}
 }
 
-// NewHandler validates configuration and starts the bounded verification workers.
+// NewHandler validates configuration and starts bounded verification workers.
+// Service.OnSubscriptionVerified and Service.OnUnsubscriptionVerified are
+// required. Publisher callbacks are also required when the publisher extension
+// is enabled.
 func NewHandler(config Config, service Service) (*Handler, error) {
 	normalized, err := normalizeConfig(config)
 	if err != nil {
@@ -140,7 +144,9 @@ func normalizeConfig(config Config) (Config, error) {
 	return config, nil
 }
 
-// ServeHTTP parses and dispatches one hub request.
+// ServeHTTP parses and dispatches one hub request. Successful subscription and
+// unsubscription admission returns HTTP 202 before asynchronous verification
+// completes.
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		response.Header().Set("Allow", http.MethodPost)
@@ -730,6 +736,8 @@ func (h *Handler) runJob(job verificationJob) {
 }
 
 // Close stops accepting requests and waits for admitted verification work.
+// When ctx expires, it cancels remaining work and returns ctx.Err. Close is
+// safe to call repeatedly.
 func (h *Handler) Close(ctx context.Context) error {
 	h.closeOnce.Do(func() {
 		h.admissionMu.Lock()

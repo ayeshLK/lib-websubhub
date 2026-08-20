@@ -30,25 +30,36 @@ const (
 	HeaderHubSignature = "X-Hub-Signature"
 )
 
-// DeliveryConfig controls outbound delivery transport.
+// DeliveryConfig controls outbound delivery transport. Zero values select
+// bounded package defaults.
 type DeliveryConfig struct {
-	HTTPClient      *http.Client
-	Timeout         time.Duration
+	// HTTPClient supplies transport settings. It is copied, never mutated, and
+	// configured to refuse redirects.
+	HTTPClient *http.Client
+	// Timeout bounds one delivery attempt.
+	Timeout time.Duration
+	// MaxResponseBody bounds the subscriber response body in bytes.
 	MaxResponseBody int64
 }
 
 // ContentDistribution is one exact payload sent to one subscriber.
 type ContentDistribution struct {
+	// ContentType is the complete media type, including parameters.
 	ContentType string
-	Body        []byte
-	Header      http.Header
+	// Body contains the exact bytes to deliver and sign.
+	Body []byte
+	// Header supplies additional delivery headers, subject to safety validation.
+	Header http.Header
 }
 
-// DeliveryResponse is a bounded snapshot of a subscriber response.
+// DeliveryResponse is a bounded, detached snapshot of a subscriber response.
 type DeliveryResponse struct {
+	// StatusCode is the subscriber's HTTP response status.
 	StatusCode int
-	Header     http.Header
-	Body       []byte
+	// Header is a detached copy of the response headers.
+	Header http.Header
+	// Body contains at most DeliveryConfig.MaxResponseBody bytes.
+	Body []byte
 }
 
 // DeliveryClient sends content to a single immutable subscription.
@@ -59,6 +70,7 @@ type DeliveryClient struct {
 }
 
 // NewDeliveryClient validates and snapshots a subscription and its transport.
+// It does not mutate config.HTTPClient.
 func NewDeliveryClient(subscription Subscription, config DeliveryConfig) (*DeliveryClient, error) {
 	if _, err := validateHTTPURL(subscription.Hub, "Hub", true, true); err != nil {
 		return nil, err
@@ -88,7 +100,9 @@ func NewDeliveryClient(subscription Subscription, config DeliveryConfig) (*Deliv
 	}, nil
 }
 
-// Deliver performs exactly one HTTP delivery attempt.
+// Deliver performs exactly one HTTP delivery attempt. It returns a
+// DeliveryResponse for HTTP responses, including non-success responses. HTTP
+// 410 errors match both ErrDeliveryFailed and ErrSubscriptionGone.
 func (c *DeliveryClient) Deliver(ctx context.Context, content ContentDistribution) (DeliveryResponse, error) {
 	if c == nil {
 		return DeliveryResponse{}, invalidRequest("DeliveryClient is nil")
