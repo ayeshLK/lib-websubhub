@@ -28,8 +28,6 @@ import (
 const (
 	// HeaderHubSignature contains the WebSub content signature.
 	HeaderHubSignature = "X-Hub-Signature"
-	// HeaderMessageID contains an application-defined delivery identifier.
-	HeaderMessageID = "X-WebSubHub-Message-ID"
 )
 
 // DeliveryConfig controls outbound delivery transport.
@@ -41,7 +39,6 @@ type DeliveryConfig struct {
 
 // ContentDistribution is one exact payload sent to one subscriber.
 type ContentDistribution struct {
-	ID          string
 	ContentType string
 	Body        []byte
 	Header      http.Header
@@ -105,7 +102,6 @@ func (c *DeliveryClient) Deliver(ctx context.Context, content ContentDistributio
 		"Host":             {},
 		"Link":             {},
 		HeaderHubSignature: {},
-		HeaderMessageID:    {},
 	}
 	if err := validateHeaders(content.Header, reserved); err != nil {
 		return DeliveryResponse{}, err
@@ -119,9 +115,6 @@ func (c *DeliveryClient) Deliver(ctx context.Context, content ContentDistributio
 	request.Header.Set("Content-Type", content.ContentType)
 	request.Header.Add("Link", encodedLink(c.subscription.Hub, "hub"))
 	request.Header.Add("Link", encodedLink(c.subscription.Topic, "self"))
-	if content.ID != "" {
-		request.Header.Set(HeaderMessageID, content.ID)
-	}
 	if c.subscription.Secret != "" {
 		mac := hmac.New(sha256.New, []byte(c.subscription.Secret))
 		_, _ = mac.Write(body)

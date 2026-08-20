@@ -10,16 +10,35 @@ All notable changes to this project will be documented here. The project uses
 - Automate semantic-version selection and changelog preparation through a
   reviewable release pull request.
 - Run release preparation only when a maintainer requests it.
+- Keep Kafka replay offsets process-local instead of persisting a next offset
+  in consolidated application snapshots.
+- Load revisioned Kafka state snapshots across topic partitions using a
+  partition-agnostic polling loop.
+- Configure the Kafka hub and consolidator through separate, typed
+  `Config.toml` files instead of command-line flags.
+- Persist a stable hub `server_id` with each subscription and start delivery
+  workers only on the owning hub instance.
 
 ### Fixed
 
+- Complete Kafka state replay immediately when `websub-events` is empty
+  instead of waiting for the startup context to expire.
 - Document the repository permission required for Release Please to create its
   pull request with the built-in GitHub Actions token.
 - Prepare v0.5.0 as the first automated release instead of accepting Release
   Please's default initial version of v1.0.0.
 
+### Removed
+
+- Remove the non-standard delivery message ID field and header from the
+  framework API and wire behavior.
+
 ### Added
 
+- Kafka-backed hub example with an eventually consistent `websub-events`
+  projection, hashed content topics, one consumer group per subscription,
+  JSON delivery, bounded retries, and application-owned stale-subscription
+  state.
 - Initial standard-library-only WebSub hub framework.
 - In-memory WebSub hub example.
 - Architecture, testing, documentation, and release plans.

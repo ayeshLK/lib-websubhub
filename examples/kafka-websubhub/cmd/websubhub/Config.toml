@@ -1,0 +1,18 @@
+[websubhub]
+# Stable identity used to own subscription delivery workers.
+server_id = "server-1"
+
+# HTTP endpoint and public hub identity.
+address = ":9090"
+path = "/hub"
+hub_url = "http://localhost:9090/hub"
+
+# Kafka state-event stream and consolidator snapshot endpoint.
+brokers = ["localhost:9092"]
+events_topic = "websub-events"
+consolidator_url = "http://localhost:9091/state-snapshot"
+
+# Bounded delivery retry policy and startup deadline.
+delivery_attempts = 3
+retry_backoff = "1s"
+startup_timeout = "30s"

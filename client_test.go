@@ -50,7 +50,7 @@ func TestDeliveryClientWireAndResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	response, err := client.Deliver(context.Background(), ContentDistribution{
-		ID: "msg-7", ContentType: "application/json; charset=utf-8", Body: payload,
+		ContentType: "application/json; charset=utf-8", Body: payload,
 		Header: http.Header{"X-Trace": {"trace-1"}},
 	})
 	if err != nil {
@@ -65,8 +65,11 @@ func TestDeliveryClientWireAndResponse(t *testing.T) {
 	if string(receivedBody) != string(payload) || received.Header.Get("Content-Type") != "application/json; charset=utf-8" {
 		t.Fatalf("payload changed: %q %q", receivedBody, received.Header.Get("Content-Type"))
 	}
-	if received.Header.Get(HeaderMessageID) != "msg-7" || received.Header.Get("X-Trace") != "trace-1" {
+	if received.Header.Get("X-Trace") != "trace-1" {
 		t.Fatalf("custom headers missing: %v", received.Header)
+	}
+	if got := received.Header.Get("X-WebSubHub-Message-ID"); got != "" {
+		t.Fatalf("non-standard message ID header = %q", got)
 	}
 	links := received.Header.Values("Link")
 	if len(links) != 2 || !strings.Contains(strings.Join(links, ","), "rel=\"hub\"") || !strings.Contains(strings.Join(links, ","), "rel=\"self\"") {

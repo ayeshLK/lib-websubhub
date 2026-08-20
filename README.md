@@ -26,6 +26,8 @@ import "github.com/ayeshLK/lib-websubhub"
 - The repository root is the published Go module.
 - [`examples/in-memory-websubhub/`](examples/in-memory-websubhub/) is a runnable,
   application-owned in-memory hub and an independent Go module.
+- [`examples/kafka-websubhub/`](examples/kafka-websubhub/) is an independent
+  module demonstrating durable state and content flow through Apache Kafka.
 - [`docs/spec.md`](docs/spec.md) defines the framework contract, protocol
   behavior, and explicit conformance boundaries.
 - [`docs/testing-plan.md`](docs/testing-plan.md) defines the test matrix and
@@ -110,7 +112,6 @@ if err != nil {
 }
 
 response, err := client.Deliver(ctx, websubhub.ContentDistribution{
-    ID:          messageID,
     ContentType: "application/json",
     Body:        payload,
 })
@@ -119,7 +120,8 @@ response, err := client.Deliver(ctx, websubhub.ContentDistribution{
 `Deliver` performs one attempt for the hub, topic, callback, and secret in
 the supplied subscription. It preserves the complete content type, including
 parameters. Applications decide retry, acknowledgment, dead-lettering, and
-stale-subscription policy. An HTTP 410 error matches
+stale-subscription policy. It does not add a project-specific delivery
+identifier or extension header. An HTTP 410 error matches
 `websubhub.ErrSubscriptionGone`.
 
 ## Publisher extension
@@ -160,6 +162,10 @@ go test -race ./...
 go test -cover ./...
 
 cd examples/in-memory-websubhub
+go test ./...
+go vet ./...
+
+cd ../kafka-websubhub
 go test ./...
 go vet ./...
 ```

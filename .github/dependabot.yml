@@ -7,3 +7,9 @@ updates:
     labels:
       - dependencies
       - github-actions
+  - package-ecosystem: gomod
+    directory: /examples/kafka-websubhub
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies

@@ -476,7 +476,6 @@ type DeliveryConfig struct {
 }
 
 type ContentDistribution struct {
-    ID          string
     ContentType string
     Body        []byte
     Header      http.Header
@@ -509,6 +508,9 @@ Each delivery:
 9. returns an error matching `ErrSubscriptionGone` for 410;
 10. returns a typed `HTTPError` for other failures;
 11. bounds and closes the response body.
+
+The client does not add a delivery identifier or other project-specific
+extension header.
 
 The client performs one logical delivery attempt. The application decides
 whether and when to retry, acknowledge, negatively acknowledge, dead-letter,
@@ -607,7 +609,7 @@ the framework's default configuration.
 | Signing when a secret exists | Implemented | `DeliveryClient` signs the exact transmitted body with HMAC-SHA256 and sends `X-Hub-Signature: sha256=<hex>`. |
 | Signature algorithm choice | SHA-256 only | SHA-1, SHA-384, SHA-512, multiple signatures, and algorithm negotiation are not implemented. SHA-256 satisfies the W3C security recommendation to use at least SHA-256 when transport may be compromised. |
 | Subscriber signature validation | Subscriber-side; unsupported | The package sends signatures but has no subscriber component to parse, verify in constant time, or reject invalid distribution requests. |
-| Header integrity | Not provided by HMAC | WebSub HMAC covers only the request body. Link, content type, message ID, and other headers are not authenticated by the signature and must not be trusted without authenticated TLS or separate application protection. |
+| Header integrity | Not provided by HMAC | WebSub HMAC covers only the request body. Link, content type, and application-supplied headers are not authenticated by the signature and must not be trusted without authenticated TLS or separate application protection. |
 | Topic and callback URL privacy | Application-owned | URLs may contain identifying information and are exposed to application callbacks and protocol peers. The package provides no retention, erasure, access-control, or privacy-policy mechanism. |
 
 ### 14.1 Transport security

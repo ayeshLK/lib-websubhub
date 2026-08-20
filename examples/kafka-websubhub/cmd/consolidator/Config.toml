@@ -1,0 +1,11 @@
+[consolidator]
+# HTTP endpoint that serves the materialized state snapshot.
+address = ":9091"
+
+# Kafka state-event and revisioned snapshot streams.
+brokers = ["localhost:9092"]
+events_topic = "websub-events"
+snapshots_topic = "websub-events-snapshots"
+
+# Kafka connection and state initialization deadline.
+startup_timeout = "30s"
