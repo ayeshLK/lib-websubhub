@@ -7,6 +7,8 @@ All notable changes to this project will be documented here. The project uses
 
 ### Changed
 
+- Consolidate testing and release guidance into `CONTRIBUTING.md` and
+  `AGENTS.md`, leaving `docs/spec.md` as the durable framework document.
 - Automate semantic-version selection and changelog preparation through a
   reviewable release pull request.
 - Run release preparation only when a maintainer requests it.

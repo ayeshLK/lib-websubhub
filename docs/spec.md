@@ -96,10 +96,10 @@ github.com/ayeshLK/lib-websubhub/
 
 Internal packages are not API commitments.
 
-## 5. Proposed public API
+## 5. Public API
 
-The signatures define the intended contract. Exact names remain subject to the
-pre-implementation API review.
+The signatures define the intended contract. The API remains subject to
+change while the module is pre-release.
 
 ```go
 package websubhub
