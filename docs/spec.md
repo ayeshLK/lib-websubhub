@@ -323,9 +323,15 @@ The handler accepts `POST`. Other methods receive `405 Method Not Allowed` and
 Topic, hub, and callback values must be absolute HTTP(S) URLs. This enforces the
 WebSub definition of a topic as an HTTP or HTTPS resource URL before application
 callbacks run. Callback URLs with userinfo or fragments are rejected.
-Applications may impose stricter topic canonicalization, authorization, and
-deployment-specific callback or SSRF policy in callbacks or outer middleware;
-such policy must also be enforced by the application's outbound transport.
+
+After form or query decoding, the handler decodes percent-encoded ASCII
+unreserved characters (`ALPHA`, `DIGIT`, `-`, `.`, `_`, and `~`) in inbound
+topic and callback URLs. Reserved escapes, non-ASCII escapes, ordering, and all
+other URL bytes remain unchanged. Subscription, unsubscription, and publisher
+extension callbacks receive these normalized values. Applications may impose
+additional topic canonicalization, authorization, and deployment-specific
+callback or SSRF policy in callbacks or outer middleware; such policy must also
+be enforced by the application's outbound transport.
 
 ## 8. Callback result mapping
 
@@ -426,9 +432,10 @@ application must not use it for publisher validation forbidden by WebSub.
 
 Unless `Controller.MarkVerified` was used, the framework sends a callback `GET`
 with mode, topic, a cryptographically random single-use challenge, and the
-effective lease for subscriptions. The callback's existing `RawQuery` is
-preserved byte-for-byte and the newly encoded parameters are appended after it.
-Existing ordering, escaping, duplicate keys, empty values, and overlapping
+effective lease for subscriptions. After the required unreserved-character
+normalization during admission, the callback's existing `RawQuery` is preserved
+byte-for-byte and the newly encoded parameters are appended after it. Existing
+ordering, reserved escaping, duplicate keys, empty values, and overlapping
 WebSub-named keys are not parsed, normalized, or overwritten.
 
 Redirects are not followed. The response body is bounded. Verification succeeds
@@ -777,8 +784,8 @@ The handler implements the core HTTP and verification parts of
 and [intent verification](https://www.w3.org/TR/websub/#hub-verifies-intent):
 form parsing, exact 202 acceptance, optional asynchronous validation, denial
 callbacks, 307/308 initial redirects, random challenges, exact challenge-body
-comparison, and verified callbacks. It also permits renewal requests to proceed
-to verification.
+comparison, percent-encoded unreserved-character normalization, and verified
+callbacks. It also permits renewal requests to proceed to verification.
 
 The following hub lifecycle behavior is not owned or enforced by the framework:
 
@@ -786,7 +793,6 @@ The following hub lifecycle behavior is not owned or enforced by the framework:
 |---|---|---|
 | Optional publisher validation | MAY | `OnSubscriptionValidation` can call publisher-specific code, but the package defines no standard publisher-validation protocol or client. |
 | No publisher validation during unsubscription | Required flow rule | The framework makes no publisher call itself. It cannot prevent an application from incorrectly doing so inside `OnUnsubscriptionValidation`; that callback must be limited to hub policy and state validation. |
-| Decode percent-encoded non-reserved URL characters | MUST | Form decoding is implemented, but the framework does not separately canonicalize percent encodings inside topic and callback URLs. This remains a framework-level protocol gap. |
 | Atomic renewal and unsubscription override | MUST | The framework emits verified messages but has no state store or transaction boundary. The application must replace or remove the topic/callback entry only after verification and leave prior state unchanged on failure. |
 | Mandatory lease expiration | MUST | The framework calculates `EffectiveLeaseSeconds` and `LeaseStartedAt` but does not expire or delete state. A conforming hub application must enforce expiry and must not create perpetual subscriptions. |
 | Optional periodic reconfirmation | OPTIONAL | No scheduler or reconfirmation API is provided. |
@@ -916,7 +922,8 @@ conformance only after supplying the missing behavior.
 - subscription and unsubscription request parsing;
 - exact 202 acceptance, denial, redirects, and intent verification;
 - finite effective lease selection and verification start metadata;
-- byte-for-byte callback query preservation with appended protocol parameters;
+- decoding of percent-encoded unreserved topic and callback URL characters;
+- preservation of the normalized callback query with appended protocol parameters;
 - authenticated single-subscriber delivery;
 - complete delivery content type and subscription-bound Link headers.
 

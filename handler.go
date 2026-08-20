@@ -335,7 +335,7 @@ func (h *Handler) serveRegistration(response http.ResponseWriter, request *http.
 		h.writeSafeError(response, http.StatusBadRequest)
 		return
 	}
-	if _, err = validateHTTPURL(topic, "hub.topic", false, false); err != nil {
+	if topic, err = normalizeHTTPURL(topic, "hub.topic", false, false); err != nil {
 		h.writeSafeError(response, http.StatusBadRequest)
 		return
 	}
@@ -369,7 +369,7 @@ func (h *Handler) serveEvent(response http.ResponseWriter, request *http.Request
 		h.writeSafeError(response, http.StatusBadRequest)
 		return
 	}
-	if _, err = validateHTTPURL(topic, "hub.topic", false, false); err != nil {
+	if topic, err = normalizeHTTPURL(topic, "hub.topic", false, false); err != nil {
 		h.writeSafeError(response, http.StatusBadRequest)
 		return
 	}
@@ -397,7 +397,7 @@ func (h *Handler) servePublisherContent(response http.ResponseWriter, request *h
 	if err != nil {
 		return err
 	}
-	if _, err = validateHTTPURL(topic, "hub.topic", false, false); err != nil {
+	if topic, err = normalizeHTTPURL(topic, "hub.topic", false, false); err != nil {
 		return err
 	}
 	body, err := h.readRequestBody(response, request)
@@ -569,10 +569,10 @@ func (h *Handler) parseSubscription(values url.Values) (Subscription, error) {
 	if err != nil {
 		return Subscription{}, err
 	}
-	if _, err = validateHTTPURL(topic, "hub.topic", false, false); err != nil {
+	if topic, err = normalizeHTTPURL(topic, "hub.topic", false, false); err != nil {
 		return Subscription{}, err
 	}
-	if _, err = validateHTTPURL(callback, "hub.callback", true, true); err != nil {
+	if callback, err = normalizeHTTPURL(callback, "hub.callback", true, true); err != nil {
 		return Subscription{}, err
 	}
 
@@ -612,10 +612,10 @@ func (h *Handler) parseUnsubscription(values url.Values) (Unsubscription, error)
 	if err != nil {
 		return Unsubscription{}, err
 	}
-	if _, err = validateHTTPURL(topic, "hub.topic", false, false); err != nil {
+	if topic, err = normalizeHTTPURL(topic, "hub.topic", false, false); err != nil {
 		return Unsubscription{}, err
 	}
-	if _, err = validateHTTPURL(callback, "hub.callback", true, true); err != nil {
+	if callback, err = normalizeHTTPURL(callback, "hub.callback", true, true); err != nil {
 		return Unsubscription{}, err
 	}
 	secret, err := parseSecret(values)

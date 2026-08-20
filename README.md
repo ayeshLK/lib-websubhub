@@ -118,10 +118,12 @@ validation and subscriber intent verification then run asynchronously. State
 changes belong in `OnSubscriptionVerified` and `OnUnsubscriptionVerified`,
 which are required so verified work is never silently discarded.
 
-Topics, hubs, and callbacks must be absolute HTTP(S) URLs. Lease and secret
-fields remain strings matching their WebSub form representation. Applications
-must persist subscriptions and expire them using `LeaseStartedAt` and
-`EffectiveLeaseSeconds`.
+Topics, hubs, and callbacks must be absolute HTTP(S) URLs. For inbound topic and
+callback values, percent-encoded URL characters in the unreserved set are
+decoded before application callbacks run; reserved escapes remain unchanged.
+Lease and secret fields remain strings matching their WebSub form
+representation. Applications must persist subscriptions and expire them using
+`LeaseStartedAt` and `EffectiveLeaseSeconds`.
 
 ## Deliver content
 

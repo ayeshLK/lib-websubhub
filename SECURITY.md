@@ -25,3 +25,7 @@ must provide TLS, authentication, authorization, rate limiting, durable state,
 callback and topic SSRF controls, trusted proxy handling, operational limits,
 and secret-safe logging. See `docs/spec.md` for the full supported/unsupported
 security matrix.
+
+The handler decodes percent-encoded URL unreserved characters before invoking
+application callbacks. Apply authorization and destination policy to those
+normalized values and enforce the same policy at dial time.

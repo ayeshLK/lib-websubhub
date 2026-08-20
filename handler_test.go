@@ -44,6 +44,26 @@ func postForm(handler http.Handler, values url.Values) *httptest.ResponseRecorde
 	return response
 }
 
+func TestDecodeURLUnreserved(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"all unreserved classes", "https://example.com/%41%5a%61%7A%30%39%2d%2E%5f%7e", "https://example.com/AZaz09-._~"},
+		{"reserved escapes", "https://example.com/%2f%3F%23?q=%26%3d%25", "https://example.com/%2f%3F%23?q=%26%3d%25"},
+		{"non-ASCII bytes", "https://example.com/%C3%A9", "https://example.com/%C3%A9"},
+		{"no escapes", "https://example.com/topic", "https://example.com/topic"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := decodeURLUnreserved(test.raw); got != test.want {
+				t.Fatalf("decodeURLUnreserved(%q) = %q, want %q", test.raw, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAuthenticatedTLSSubscriptionLifecycle(t *testing.T) {
 	type principalKey struct{}
 	const principal = "alice"
@@ -306,7 +326,8 @@ func TestPublisherClientAgainstHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	topic := "https://publisher.example/topic"
+	topic := "https://publisher.example/%7Ealice?letter=%41&slash=%2F"
+	normalizedTopic := "https://publisher.example/~alice?letter=A&slash=%2F"
 	invalidTopic := postForm(handler, url.Values{"hub.mode": {"register"}, "hub.topic": {"test"}})
 	if invalidTopic.Code != http.StatusBadRequest {
 		t.Fatalf("relative topic registration status = %d, want %d", invalidTopic.Code, http.StatusBadRequest)
@@ -329,7 +350,12 @@ func TestPublisherClientAgainstHandler(t *testing.T) {
 	if len(registrations) != 2 || len(updates) != 2 {
 		t.Fatalf("callbacks: registrations=%v updates=%+v", registrations, updates)
 	}
-	if updates[0].Kind != UpdateEvent || updates[1].Kind != UpdateContent || string(updates[1].Body) != "{\"n\":1}" {
+	if registrations[0] != "register:"+normalizedTopic || registrations[1] != "deregister:"+normalizedTopic {
+		t.Fatalf("normalized registration topics = %v", registrations)
+	}
+
+	if updates[0].Kind != UpdateEvent || updates[0].Topic != normalizedTopic || updates[1].Kind != UpdateContent ||
+		updates[1].Topic != normalizedTopic || string(updates[1].Body) != "{\"n\":1}" {
 		t.Fatalf("update mapping = %+v", updates)
 	}
 }

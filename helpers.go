@@ -88,6 +88,66 @@ func validateHTTPURL(raw, name string, rejectUserinfo, rejectFragment bool) (*ur
 	return u, nil
 }
 
+func normalizeHTTPURL(raw, name string, rejectUserinfo, rejectFragment bool) (string, error) {
+	if _, err := validateHTTPURL(raw, name, rejectUserinfo, rejectFragment); err != nil {
+		return "", err
+	}
+	return decodeURLUnreserved(raw), nil
+}
+
+func decodeURLUnreserved(raw string) string {
+	var normalized strings.Builder
+	last := 0
+	changed := false
+	for index := 0; index+2 < len(raw); index++ {
+		if raw[index] != '%' {
+			continue
+		}
+		high, highOK := hexValue(raw[index+1])
+		low, lowOK := hexValue(raw[index+2])
+		if !highOK || !lowOK {
+			continue
+		}
+		decoded := high<<4 | low
+		if !isURLUnreserved(decoded) {
+			continue
+		}
+		if !changed {
+			normalized.Grow(len(raw))
+			changed = true
+		}
+		normalized.WriteString(raw[last:index])
+		normalized.WriteByte(decoded)
+		index += 2
+		last = index + 1
+	}
+	if !changed {
+		return raw
+	}
+	normalized.WriteString(raw[last:])
+	return normalized.String()
+}
+
+func hexValue(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func isURLUnreserved(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' ||
+		value == '-' || value == '.' || value == '_' || value == '~'
+}
+
 func newHTTPClient(supplied *http.Client, timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = defaultClientTimeout
