@@ -12,7 +12,8 @@ explicit task scope. Deliberate API changes require coordinated specification,
 test, documentation, and `CHANGELOG.md` updates.
 
 This package is not a complete hub product and must not claim standalone W3C hub
-or subscriber conformance while the gaps in `docs/spec.md` remain.
+or subscriber conformance while the application responsibilities in
+`docs/spec.md` remain unsupplied.
 
 ## Authority and reading order
 
@@ -21,7 +22,7 @@ Before changing code, read the documents relevant to the task:
 1. `README.md` for the public project overview and basic usage.
 2. `CONTRIBUTING.md` for validation, coverage, change, and release workflows.
 3. `docs/spec.md` for the normative API, protocol behavior, ownership boundary,
-   security limitations, and W3C gap analysis.
+   security limitations, and W3C conformance and ownership analysis.
 4. `SECURITY.md` and specification Section 14 for security-sensitive work.
 5. The README and tests of each affected example module.
 

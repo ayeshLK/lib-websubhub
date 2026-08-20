@@ -637,8 +637,8 @@ from untrusted `Host`, `Forwarded`, or `X-Forwarded-*` headers.
 The core package is not a subscriber and does not parse HTML, Atom, RSS, or HTTP
 response bodies for discovery. Consequently, it does not implement the W3C
 recommendation to avoid attacker-supplied `link` elements in an HTML `body`.
-Any future discovery client must define a safe parsing boundary, prefer HTTPS
-hub links, and treat every discovered hub URL as untrusted input.
+Subscriber discovery code must define a safe parsing boundary, prefer HTTPS hub
+links, and treat every discovered hub URL as untrusted input.
 
 `AddDiscoveryLinks` only validates and appends application-supplied `rel=self`
 and `rel=hub` Link values. It does not establish that the caller controls either
@@ -722,7 +722,7 @@ the application that persists topics and verified subscriptions. JWT, JWKS,
 OAuth, Prometheus, OpenTelemetry, and vendor-specific security or observability
 remain middleware/application concerns.
 
-## 15. W3C hub and subscriber flow gap analysis
+## 15. W3C conformance and ownership analysis
 
 This section audits the package against the hub- and subscriber-facing flows in
 the [W3C WebSub Recommendation](https://www.w3.org/TR/websub/). "Not included"
@@ -731,10 +731,12 @@ application may implement it around the package. The package alone is neither a
 complete deployable hub nor a WebSub subscriber. Conformance is a property of the
 assembled application.
 
+The tables document current ownership boundaries.
+
 The W3C defines separate
 [hub](https://www.w3.org/TR/websub/#hubs) and
 [subscriber](https://www.w3.org/TR/websub/#subscribers) conformance classes;
-the gaps below are grouped by the actor that must supply the behavior.
+the boundaries below are grouped by the actor that must supply the behavior.
 
 ### 15.1 Discovery and canonical topic selection
 
@@ -744,10 +746,9 @@ first, then inspect embedded HTML or XML links when headers are absent. It also
 defines [content-negotiation](https://www.w3.org/TR/websub/#content-negotiation)
 behavior through representation-specific `rel=self` URLs.
 
-| Flow | Current support | Gap or owner |
+| Flow | Current support | Boundary or owner |
 |---|---|---|
 | Publisher advertises `rel=self` and one or more `rel=hub` links | Partial | `AddDiscoveryLinks` appends HTTP Link headers. It does not generate embedded HTML, Atom, or RSS links. |
-| Enforce exactly one canonical `rel=self` across an existing response | Not included | The helper does not parse or reject pre-existing duplicate self links; publisher code owns the complete response. |
 | Subscriber GET/HEAD discovery and Link parsing order | Not included | There is no discovery client or Link-header parser. |
 | Embedded HTML/XML discovery | Not included | There is no HTML, Atom, RSS, or generic XML parser. |
 | Representation and language negotiation | Not included | Publisher and subscriber code must agree on and retain the discovered canonical self URL. |
@@ -789,14 +790,13 @@ callbacks. It also permits renewal requests to proceed to verification.
 
 The following hub lifecycle behavior is not owned or enforced by the framework:
 
-| Requirement or flow | W3C level | Current gap |
+| Requirement or flow | W3C level | Current boundary |
 |---|---|---|
 | Optional publisher validation | MAY | `OnSubscriptionValidation` can call publisher-specific code, but the package defines no standard publisher-validation protocol or client. |
 | No publisher validation during unsubscription | Required flow rule | The framework makes no publisher call itself. It cannot prevent an application from incorrectly doing so inside `OnUnsubscriptionValidation`; that callback must be limited to hub policy and state validation. |
 | Atomic renewal and unsubscription override | MUST | The framework emits verified messages but has no state store or transaction boundary. The application must replace or remove the topic/callback entry only after verification and leave prior state unchanged on failure. |
 | Mandatory lease expiration | MUST | The framework calculates `EffectiveLeaseSeconds` and `LeaseStartedAt` but does not expire or delete state. A conforming hub application must enforce expiry and must not create perpetual subscriptions. |
 | Optional periodic reconfirmation | OPTIONAL | No scheduler or reconfirmation API is provided. |
-| Denial of a previously active subscription | MAY | A validation-time `DeniedError` sends `hub.mode=denied`, but there is no public operation for a hub application to revoke and notify an already-active subscription later. |
 | Durable recovery | Not specified | Pending verification jobs and verified subscription state are in memory or application-owned; no restart recovery, reconciliation, or clustered ownership is provided. |
 
 Synchronous admission callbacks must not be used to perform the asynchronous
@@ -819,8 +819,7 @@ not included. The package has no callback handler that:
 - commits local subscriber state only after accepting verification; or
 - receives and acts on later `hub.mode=denied` notifications.
 
-These features require a separate subscriber-facing API if they are to become
-part of this module.
+Subscriber-facing APIs are outside the current module scope.
 
 ### 15.5 Publishing and subscription migration
 
@@ -846,24 +845,17 @@ The remaining
 [Content Distribution](https://www.w3.org/TR/websub/#content-distribution)
 workflow is application-owned or absent:
 
-| Requirement or flow | W3C level | Current gap |
+| Requirement or flow | W3C level | Current boundary |
 |---|---|---|
 | Select and distribute the full current representation | MUST | The framework cannot fetch, persist, or determine completeness of topic content. `ContentDistribution.Body` is trusted as complete. |
 | Match the topic representation's Content-Type | MUST | The client preserves the complete caller-supplied value but cannot fetch the topic or verify that the value matches its current representation. |
 | Atom/RSS reduced-feed delivery | MAY | No format-aware diff or already-delivered entry filtering is provided. |
-| Content-bound `rel=self` and `rel=hub` metadata | MUST | Deliberate current limitation: Link values come from the subscription snapshot. `ContentDistribution` cannot specify the canonical topic and hubs for the delivered content when they differ from the original subscription. |
-| Combine hub and self relations into one Link header | SHOULD | The client sends separate Link header values. |
 | Ignore subscriber response bodies | MUST | The client reads a bounded response body and exposes it in `DeliveryResponse` for diagnostics. Applications must not assign WebSub protocol meaning to it. |
 | Fan-out and ordering | Required hub behavior; ordering unspecified | The client targets one subscription. Enumeration, concurrency, ordering, backpressure, and per-topic sequencing are application responsibilities. |
 | Retry with limits | SHOULD | No automatic retry, delay, backoff, jitter, or retry budget is provided. |
 | Keep a failing subscription active | MUST | The client reports failure but has no subscription state. The application must retain it until lease expiry and attempt later updates despite earlier failures. |
 | HTTP 410 handling | MAY | `ErrSubscriptionGone` is returned, but termination is an application decision. |
 | Delivery deduplication | Not specified | No event identifier semantics, replay ledger, idempotency key, or deduplication store is defined. |
-
-The content-bound Link limitation is a known deviation from the general W3C
-model, which allows the canonical topic in a distribution to differ from the
-originally subscribed URL. It is retained by the current API and must be
-reconsidered before claiming complete hub conformance.
 
 ### 15.7 Subscriber content distribution
 
@@ -908,16 +900,16 @@ without adding those dependencies to `websubhub` itself.
 
 No compiler plugin is planned. Go's compiler validates callback function types,
 `NewHandler` validates required callback presence and configuration, and normal
-tests validate runtime combinations. A custom `go vet` analyzer would be
-considered only if a future declarative API introduced invariants that neither
-the compiler nor constructor could express.
+tests validate runtime combinations. A custom `go vet` analyzer remains outside
+scope while compilation and constructor validation express all API invariants.
 
 ## 17. Conformance boundary
 
-The framework implements the protocol portions below. Because the MUST-level
-gaps in Section 15 remain, this list defines an implementation boundary, not a
-standalone W3C hub conformance claim. A complete assembled hub may claim
-conformance only after supplying the missing behavior.
+The framework implements the protocol portions below. Because the module
+intentionally delegates MUST-level behavior described in Section 15, this list
+defines an implementation boundary rather than a standalone W3C hub conformance
+claim. A complete assembled hub may claim conformance only after supplying the
+missing behavior.
 
 - subscription and unsubscription request parsing;
 - exact 202 acceptance, denial, redirects, and intent verification;

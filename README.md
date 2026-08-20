@@ -192,8 +192,8 @@ caller-supplied `http.Client` values.
 
 Read the [security policy](SECURITY.md) and
 [normative framework specification](docs/spec.md) before exposing a hub to
-untrusted networks. The specification documents the remaining W3C conformance
-gaps and the optional publisher extension boundary.
+untrusted networks. The specification documents the W3C conformance and
+ownership boundaries and the optional publisher extension.
 
 ## Documentation
 
