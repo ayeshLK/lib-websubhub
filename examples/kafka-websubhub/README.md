@@ -6,17 +6,25 @@ transitive dependencies do not enter the core module graph.
 
 The example demonstrates an application-owned broker architecture:
 
-- a single-partition `websub-events` log records the framework's concrete
-  topic registrations, verified subscriptions, verified unsubscriptions, and
-  deregistrations directly, plus an application-owned stale-subscription event;
+- a single-partition `websub-events` log records concrete topic registrations,
+  verified unsubscriptions, and deregistrations directly; subscription records
+  remain flat but add application-owned `server_id` and optional `status`
+  fields;
 - validated state changes complete when Kafka acknowledges their event;
-- only the event replay/tail worker applies those events to in-memory state, so
-  dependent requests observe eventual consistency;
-- every process restart replays that log before the HTTP endpoint starts;
+- a consolidator persists the current materialized view to the compact
+  `websub-events-snapshots` topic and exposes it over HTTP;
+- snapshots contain application state only and do not persist Kafka offsets;
+- the consolidator and hub replay retained state events through a captured log
+  end before their HTTP endpoints start, then tail new events with a
+  process-local Kafka cursor;
+- only event application changes in-memory state, so dependent requests observe
+  eventual consistency;
 - every WebSub topic maps to
   `websub-topic-<sha256(websub-topic-url)>`, which stores JSON updates;
-- every subscription runs one asynchronous Kafka consumer in a group derived
-  from the topic, callback, and original `LeaseStartedAt`;
+- each subscription is owned by the `server_id` of the hub that accepted it;
+  every hub caches it, but only the owning instance starts its Kafka consumer;
+- every owned subscription uses a consumer group derived from the topic,
+  callback, and original `LeaseStartedAt`;
 - a new group starts at the end of its content topic and commits a polled batch
   only after every record is delivered successfully; and
 - exhausted delivery retries publish a flat subscription record with
@@ -33,14 +41,16 @@ batch commit can redeliver records to that subscriber. Subscribers must
 tolerate duplicates using application-level semantics; the hub adds no
 non-standard WebSub delivery identifier. An unsubscribe followed by a new
 subscription receives a new consumer group and does not inherit the earlier
-group's backlog. Resubscribing a stale subscription reuses its original group
-and uncommitted offset.
+group's backlog. Resubscribing a stale subscription reuses its original group, server
+owner, and uncommitted offset.
 
 ## Scope and security
 
 This is a local architecture example, not a production hub or a W3C conformance
-claim. It intentionally runs one hub instance and does not provide inbound
-authentication, TLS, rate limiting, metrics, or callback/topic SSRF controls.
+claim. It supports multiple hub instances with unique, stable server IDs and
+one consolidator, but does not provide automatic subscription failover or
+rebalancing. It also omits inbound authentication, TLS, rate limiting, metrics,
+and callback/topic SSRF controls.
 The supplied Kafka listener is plaintext. The example also assumes JSON
 content and intentionally omits lease-expiry scheduling; a conforming
 production hub must expire subscriptions and continue appropriate delivery
@@ -63,42 +73,54 @@ capacity-tested before production use.
 
 The module uses a local `replace` directive for the library at `../..`.
 
+Each process reads `Config.toml` from its working directory:
+
+- `cmd/websubhub/Config.toml` contains the `[websubhub]` settings. Assign a
+  unique, stable `server_id` to every deployed hub instance.
+- `cmd/consolidator/Config.toml` contains the `[consolidator]` settings.
+
+Unknown keys, invalid durations, and missing required values cause startup to
+fail.
+
 ## Start Kafka and the hub
 
-From this directory:
+From this directory, start Kafka:
 
 ```sh
 docker compose up -d
+```
+
+Compose starts Kafka in single-node KRaft mode, creates the single-partition
+`websub-events` log and compact `websub-events-snapshots` topic, and permits
+automatic creation of one-partition content topics.
+
+Start the consolidator and hub from their respective directories in separate
+terminals:
+
+```sh
+cd cmd/consolidator
 go run .
 ```
 
-Compose starts Kafka in single-node KRaft mode, creates the `websub-events`
-topic, and permits automatic creation of one-partition content topics. The hub
-listens at `http://localhost:9090/hub`; its health endpoint is
-`http://localhost:9090/healthz`.
+```sh
+cd cmd/websubhub
+go run .
+```
+
+The consolidator exposes `http://localhost:9091/state-snapshot` and
+`http://localhost:9091/healthz`. The hub listens at
+`http://localhost:9090/hub`, with health at `http://localhost:9090/healthz`.
 
 For an existing cluster, create the single-partition event topic and permit
-automatic content-topic creation for this example, then run:
+automatic content-topic creation for this example. Set `brokers` in both
+configuration files, for example:
 
-```sh
-go run . -brokers broker-1:9092,broker-2:9092
+```toml
+brokers = ["broker-1:9092", "broker-2:9092"]
 ```
 
-Useful options include:
-
-```text
--delivery-attempts int
-      bounded delivery attempts before marking a subscription stale (default 3)
--events-topic string
-      state-event topic (default "websub-events")
--retry-backoff duration
-      delay between delivery attempts (default 1s)
--startup-timeout duration
-      Kafka connection and event replay timeout (default 30s)
-```
-
-Run `go run . -help` for topic names and HTTP options. Stop the hub with
-`Ctrl+C`; stop Kafka with `docker compose down`.
+Start the consolidator before the hub. Stop both processes with `Ctrl+C`;
+stop Kafka with `docker compose down`.
 
 ## Protocol walkthrough
 
@@ -151,7 +173,7 @@ per-subscription workers, JSON materialization, retry, stale state, batch
 commit, signatures, and delivery behavior:
 
 ```sh
-gofmt -w *.go
+gofmt -w cmd consolidator internal websubhub
 go vet ./...
 go test -race ./...
 ```

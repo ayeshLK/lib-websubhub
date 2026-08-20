@@ -10,6 +10,14 @@ All notable changes to this project will be documented here. The project uses
 - Automate semantic-version selection and changelog preparation through a
   reviewable release pull request.
 - Run release preparation only when a maintainer requests it.
+- Keep Kafka replay offsets process-local instead of persisting a next offset
+  in consolidated application snapshots.
+- Load revisioned Kafka state snapshots across topic partitions using a
+  partition-agnostic polling loop.
+- Configure the Kafka hub and consolidator through separate, typed
+  `Config.toml` files instead of command-line flags.
+- Persist a stable hub `server_id` with each subscription and start delivery
+  workers only on the owning hub instance.
 
 ### Fixed
 

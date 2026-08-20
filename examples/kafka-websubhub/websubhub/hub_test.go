@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package websubhub
 
 import (
 	"context"
@@ -32,12 +32,14 @@ import (
 	"time"
 
 	websubhub "github.com/ayeshLK/lib-websubhub"
-	"github.com/twmb/franz-go/pkg/kmsg"
+	"github.com/ayeshLK/lib-websubhub/examples/kafka-websubhub/internal/state"
 )
+
+const testServerID = "server-1"
 
 type fakeConsumer struct {
 	topic string
-	batch chan []contentMessage
+	batch chan []ContentMessage
 }
 
 type consumerIdentity struct {
@@ -47,7 +49,7 @@ type consumerIdentity struct {
 
 type publishedContent struct {
 	topic   string
-	content contentMessage
+	content ContentMessage
 }
 
 type fakeBroker struct {
@@ -64,8 +66,15 @@ type fakeBroker struct {
 }
 
 func newFakeBroker(seed ...any) *fakeBroker {
+	normalized := make([]any, len(seed))
+	for index, event := range seed {
+		if verified, ok := event.(websubhub.VerifiedSubscription); ok {
+			event = state.NewSubscription(verified, testServerID)
+		}
+		normalized[index] = event
+	}
 	return &fakeBroker{
-		seed:             append([]any(nil), seed...),
+		seed:             normalized,
 		events:           make(chan any, 32),
 		appliedEvents:    make(chan string, 32),
 		consumers:        make(map[string]*fakeConsumer),
@@ -90,11 +99,11 @@ func (b *fakeBroker) PublishTopicDeregistration(ctx context.Context, deregistrat
 	return b.publishEvent(ctx, deregistration)
 }
 
-func (b *fakeBroker) PublishSubscription(ctx context.Context, subscription websubhub.VerifiedSubscription) error {
+func (b *fakeBroker) PublishSubscription(ctx context.Context, subscription state.Subscription) error {
 	return b.publishEvent(ctx, subscription)
 }
 
-func (b *fakeBroker) PublishStaleSubscription(ctx context.Context, subscription subscriptionState) error {
+func (b *fakeBroker) PublishStaleSubscription(ctx context.Context, subscription state.Subscription) error {
 	return b.publishEvent(ctx, subscription)
 }
 
@@ -114,7 +123,7 @@ func (b *fakeBroker) publishEvent(ctx context.Context, event any) error {
 	}
 }
 
-func (b *fakeBroker) PublishContent(ctx context.Context, topic string, content contentMessage) error {
+func (b *fakeBroker) PublishContent(ctx context.Context, topic string, content ContentMessage) error {
 	cloned := cloneContent(content)
 	select {
 	case b.contentPublished <- publishedContent{topic: topic, content: cloned}:
@@ -132,7 +141,7 @@ func (b *fakeBroker) PublishContent(ctx context.Context, topic string, content c
 	b.mu.Unlock()
 	for _, consumer := range consumers {
 		select {
-		case consumer.batch <- []contentMessage{cloneContent(content)}:
+		case consumer.batch <- []ContentMessage{cloneContent(content)}:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -140,7 +149,7 @@ func (b *fakeBroker) PublishContent(ctx context.Context, topic string, content c
 	return nil
 }
 
-func (b *fakeBroker) ReplayEvents(ctx context.Context, consumer eventConsumer) error {
+func (b *fakeBroker) ReplayEvents(ctx context.Context, consumer state.Consumer) error {
 	for _, event := range b.seed {
 		if err := applyFakeEvent(ctx, event, consumer); err != nil {
 			return err
@@ -149,7 +158,7 @@ func (b *fakeBroker) ReplayEvents(ctx context.Context, consumer eventConsumer) e
 	return nil
 }
 
-func (b *fakeBroker) ConsumeEvents(ctx context.Context, consumer eventConsumer) error {
+func (b *fakeBroker) ConsumeEvents(ctx context.Context, consumer state.Consumer) error {
 	if b.eventConsumerGate != nil {
 		select {
 		case <-b.eventConsumerGate:
@@ -174,8 +183,8 @@ func (b *fakeBroker) ConsumeEvents(ctx context.Context, consumer eventConsumer) 
 	}
 }
 
-func (b *fakeBroker) ConsumeSubscription(ctx context.Context, topic, group string, consume contentBatchConsumer) error {
-	consumer := &fakeConsumer{topic: topic, batch: make(chan []contentMessage, 8)}
+func (b *fakeBroker) ConsumeSubscription(ctx context.Context, topic, group string, consume ContentBatchConsumer) error {
+	consumer := &fakeConsumer{topic: topic, batch: make(chan []ContentMessage, 8)}
 	b.mu.Lock()
 	b.consumers[group] = consumer
 	b.mu.Unlock()
@@ -217,7 +226,7 @@ func (b *fakeBroker) publishedStateEvents() []any {
 	return append([]any(nil), b.state...)
 }
 
-func (b *fakeBroker) enqueueBatch(t *testing.T, group string, batch []contentMessage) {
+func (b *fakeBroker) enqueueBatch(t *testing.T, group string, batch []ContentMessage) {
 	t.Helper()
 	b.mu.Lock()
 	consumer := b.consumers[group]
@@ -232,30 +241,31 @@ func (b *fakeBroker) enqueueBatch(t *testing.T, group string, batch []contentMes
 	}
 }
 
-func cloneContent(content contentMessage) contentMessage {
-	return contentMessage{ContentType: content.ContentType, Body: append([]byte(nil), content.Body...)}
+func cloneContent(content ContentMessage) ContentMessage {
+	return ContentMessage{ContentType: content.ContentType, Body: append([]byte(nil), content.Body...)}
 }
 
-func cloneBatch(batch []contentMessage) []contentMessage {
-	cloned := make([]contentMessage, len(batch))
+func cloneBatch(batch []ContentMessage) []ContentMessage {
+	cloned := make([]ContentMessage, len(batch))
 	for index, content := range batch {
 		cloned[index] = cloneContent(content)
 	}
 	return cloned
 }
 
-func applyFakeEvent(ctx context.Context, event any, consumer eventConsumer) error {
+func applyFakeEvent(ctx context.Context, event any, consumer state.Consumer) error {
 	switch event := event.(type) {
 	case websubhub.TopicRegistration:
-		return consumer.applyTopicRegistration(ctx, event)
+		return consumer.ApplyTopicRegistration(ctx, event)
 	case websubhub.TopicDeregistration:
-		return consumer.applyTopicDeregistration(ctx, event)
-	case websubhub.VerifiedSubscription:
-		return consumer.applySubscription(ctx, event)
-	case subscriptionState:
-		return consumer.applyStaleSubscription(ctx, event)
+		return consumer.ApplyTopicDeregistration(ctx, event)
+	case state.Subscription:
+		if event.Status == "" {
+			return consumer.ApplySubscription(ctx, event)
+		}
+		return consumer.ApplyStaleSubscription(ctx, event)
 	case websubhub.VerifiedUnsubscription:
-		return consumer.applyUnsubscription(ctx, event)
+		return consumer.ApplyUnsubscription(ctx, event)
 	default:
 		return errors.New("unsupported fake event")
 	}
@@ -267,9 +277,10 @@ func fakeEventLabel(event any) string {
 		return string(event.Mode)
 	case websubhub.TopicDeregistration:
 		return string(event.Mode)
-	case websubhub.VerifiedSubscription:
-		return string(event.Mode)
-	case subscriptionState:
+	case state.Subscription:
+		if event.Status == "" {
+			return string(event.Mode)
+		}
 		return string(event.Status)
 	case websubhub.VerifiedUnsubscription:
 		return string(event.Mode)
@@ -416,6 +427,57 @@ func TestSubscriptionWorkerDeliversMappedJSONContent(t *testing.T) {
 	}
 }
 
+func TestVerifiedSubscriptionIsTaggedWithCurrentServer(t *testing.T) {
+	topic := "http://publisher.example/topics/new-owner"
+	broker := newFakeBroker(websubhub.TopicRegistration{Mode: websubhub.ModeRegister, Topic: topic})
+	hub := newTestHub(t, broker)
+	verified := verifiedSubscription(topic, "http://subscriber.example/callback", time.Now())
+
+	if err := hub.onSubscriptionVerified(context.Background(), verified, websubhub.RequestMetadata{}); err != nil {
+		t.Fatalf("publish subscription: %v", err)
+	}
+	events := broker.publishedStateEvents()
+	if len(events) != 1 {
+		t.Fatalf("published events = %d, want 1", len(events))
+	}
+	subscription, ok := events[0].(state.Subscription)
+	if !ok || subscription.ServerID != testServerID {
+		t.Fatalf("published subscription = %#v, want owner %q", events[0], testServerID)
+	}
+	waitForAppliedEvent(t, broker, string(websubhub.ModeSubscribe))
+}
+
+func TestSubscriptionWorkersStartOnlyForOwningServer(t *testing.T) {
+	topic := "http://publisher.example/topics/owned"
+	local := verifiedSubscription(topic, "http://subscriber.example/local", time.Now())
+	foreign := verifiedSubscription(topic, "http://subscriber.example/foreign", time.Now().Add(time.Second))
+	broker := newFakeBroker(
+		websubhub.TopicRegistration{Mode: websubhub.ModeRegister, Topic: topic},
+		state.NewSubscription(local, testServerID),
+		state.NewSubscription(foreign, "server-2"),
+	)
+	hub := newTestHub(t, broker)
+
+	hub.mu.RLock()
+	localStored := hub.subscribers[topic][local.Callback]
+	foreignStored := hub.subscribers[topic][foreign.Callback]
+	hub.mu.RUnlock()
+	if localStored == nil || localStored.cancel == nil {
+		t.Fatal("owning server did not start its subscription worker")
+	}
+	if foreignStored == nil || foreignStored.serverID != "server-2" {
+		t.Fatalf("foreign subscription = %+v", foreignStored)
+	}
+	if foreignStored.cancel != nil {
+		t.Fatal("non-owning server started a foreign subscription worker")
+	}
+
+	consumer := waitForConsumer(t, broker)
+	if consumer.group != subscriptionGroupName(local) {
+		t.Fatalf("started consumer group = %q, want local subscription group", consumer.group)
+	}
+}
+
 func TestStaleSubscriptionIsFlatAndRecoveryReusesConsumerGroup(t *testing.T) {
 	callback := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusServiceUnavailable)
@@ -440,19 +502,19 @@ func TestStaleSubscriptionIsFlatAndRecoveryReusesConsumerGroup(t *testing.T) {
 	}, websubhub.RequestMetadata{}); err != nil {
 		t.Fatalf("publish failing update: %v", err)
 	}
-	waitForAppliedEvent(t, broker, string(subscriptionStatusStale))
+	waitForAppliedEvent(t, broker, string(state.SubscriptionStatusStale))
 
 	hub.mu.RLock()
 	stored := hub.subscribers[topic][callback.URL]
 	hub.mu.RUnlock()
-	if stored == nil || stored.status != subscriptionStatusStale {
+	if stored == nil || stored.status != state.SubscriptionStatusStale {
 		t.Fatalf("stored subscription = %+v, want stale", stored)
 	}
 
 	events := broker.publishedStateEvents()
-	var stale subscriptionState
+	var stale state.Subscription
 	for _, event := range events {
-		if candidate, ok := event.(subscriptionState); ok {
+		if candidate, ok := event.(state.Subscription); ok {
 			stale = candidate
 		}
 	}
@@ -470,20 +532,24 @@ func TestStaleSubscriptionIsFlatAndRecoveryReusesConsumerGroup(t *testing.T) {
 	if got := string(object["status"]); got != `"stale"` {
 		t.Fatalf("stale status JSON = %s", got)
 	}
-	decodedHub := &kafkaHub{
+	if got := string(object["server_id"]); got != `"server-1"` {
+		t.Fatalf("server ID JSON = %s", got)
+	}
+	decodedHub := &Hub{
 		topics:      make(map[string]struct{}),
 		subscribers: make(map[string]map[string]*storedSubscription),
 		replaying:   true,
+		serverID:    testServerID,
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	if err := decodedHub.applySubscription(context.Background(), verified); err != nil {
+	if err := decodedHub.ApplySubscription(context.Background(), state.NewSubscription(verified, testServerID)); err != nil {
 		t.Fatalf("seed decoded subscription state: %v", err)
 	}
-	if err := applyEvent(context.Background(), payload, decodedHub); err != nil {
+	if err := state.ApplyEvent(context.Background(), payload, decodedHub); err != nil {
 		t.Fatalf("decode stale subscription event: %v", err)
 	}
-	if got := decodedHub.subscribers[topic][callback.URL].status; got != subscriptionStatusStale {
-		t.Fatalf("decoded subscription status = %q, want %q", got, subscriptionStatusStale)
+	if got := decodedHub.subscribers[topic][callback.URL].status; got != state.SubscriptionStatusStale {
+		t.Fatalf("decoded subscription status = %q, want %q", got, state.SubscriptionStatusStale)
 	}
 
 	recovery := verifiedSubscription(topic, callback.URL, started.Add(time.Hour))
@@ -552,11 +618,11 @@ func TestFailedBatchIsNotCommitted(t *testing.T) {
 	)
 	newTestHub(t, broker)
 	consumer := waitForConsumer(t, broker)
-	broker.enqueueBatch(t, consumer.group, []contentMessage{
+	broker.enqueueBatch(t, consumer.group, []ContentMessage{
 		{ContentType: "application/json", Body: []byte(`{"sequence":1}`)},
 		{ContentType: "application/json", Body: []byte(`{"sequence":2}`)},
 	})
-	waitForAppliedEvent(t, broker, string(subscriptionStatusStale))
+	waitForAppliedEvent(t, broker, string(state.SubscriptionStatusStale))
 
 	select {
 	case group := <-broker.committed:
@@ -637,33 +703,42 @@ func TestKafkaIdentifiersAreSafeAndCollisionResistant(t *testing.T) {
 	}
 }
 
-func TestEventLogEndOffsetAcceptsEmptyTopic(t *testing.T) {
-	const topic = "websub-events"
-	response := kmsg.NewPtrListOffsetsResponse()
-	response.Topics = []kmsg.ListOffsetsResponseTopic{{
+func TestHubReplaysEventsFromEmptySnapshot(t *testing.T) {
+	topic := "http://publisher.example/topics/replay"
+	subscription := verifiedSubscription(
+		topic,
+		"http://subscriber.example/callback",
+		time.Now(),
+	)
+	broker := newFakeBroker(websubhub.TopicRegistration{
+		Mode:  websubhub.ModeRegister,
 		Topic: topic,
-		Partitions: []kmsg.ListOffsetsResponseTopicPartition{{
-			Partition: eventsPartition,
-			Offset:    0,
-		}},
-	}}
-	offset, err := eventLogEndOffset(response, topic)
-	if err != nil {
-		t.Fatalf("resolve empty event-log end: %v", err)
+	}, subscription)
+	hub := newTestHubFromSnapshot(t, broker, state.Snapshot{})
+	if !hub.hasTopic(topic) {
+		t.Fatal("replayed topic is missing")
 	}
-	if offset != 0 {
-		t.Fatalf("empty event-log end = %d, want 0", offset)
+	consumer := waitForConsumer(t, broker)
+	if consumer.group != subscriptionGroupName(subscription) {
+		t.Fatalf("consumer group = %q", consumer.group)
 	}
 }
 
-func newTestHub(t *testing.T, broker *fakeBroker) *kafkaHub {
+func newTestHub(t *testing.T, broker *fakeBroker) *Hub {
 	t.Helper()
-	hub, err := newKafkaHub(context.Background(), hubOptions{
-		hubURL:           "http://hub.example/hub",
-		broker:           broker,
-		deliveryAttempts: 2,
-		retryBackoff:     time.Nanosecond,
-		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	return newTestHubFromSnapshot(t, broker, snapshotFromEvents(broker.seed))
+}
+
+func newTestHubFromSnapshot(t *testing.T, broker *fakeBroker, snapshot state.Snapshot) *Hub {
+	t.Helper()
+	hub, err := New(context.Background(), Options{
+		HubURL:           "http://hub.example/hub",
+		ServerID:         testServerID,
+		Broker:           broker,
+		SnapshotSource:   staticSnapshotSource{snapshot: snapshot},
+		DeliveryAttempts: 2,
+		RetryBackoff:     time.Nanosecond,
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new Kafka hub: %v", err)
@@ -676,4 +751,44 @@ func newTestHub(t *testing.T, broker *fakeBroker) *kafkaHub {
 		}
 	})
 	return hub
+}
+
+type staticSnapshotSource struct {
+	snapshot state.Snapshot
+}
+
+func (s staticSnapshotSource) Snapshot(context.Context) (state.Snapshot, error) {
+	return s.snapshot.Clone(), nil
+}
+
+func snapshotFromEvents(events []any) state.Snapshot {
+	topics := make(map[string]websubhub.TopicRegistration)
+	subscriptions := make(map[string]state.Subscription)
+	for _, event := range events {
+		switch event := event.(type) {
+		case websubhub.TopicRegistration:
+			topics[event.Topic] = event
+		case websubhub.TopicDeregistration:
+			delete(topics, event.Topic)
+			for key, subscription := range subscriptions {
+				if subscription.Topic == event.Topic {
+					delete(subscriptions, key)
+				}
+			}
+		case websubhub.VerifiedSubscription:
+			subscriptions[event.Topic+"\x00"+event.Callback] = state.NewSubscription(event, testServerID)
+		case state.Subscription:
+			subscriptions[event.Topic+"\x00"+event.Callback] = event
+		case websubhub.VerifiedUnsubscription:
+			delete(subscriptions, event.Topic+"\x00"+event.Callback)
+		}
+	}
+	snapshot := state.Snapshot{}
+	for _, topic := range topics {
+		snapshot.Topics = append(snapshot.Topics, topic)
+	}
+	for _, subscription := range subscriptions {
+		snapshot.Subscriptions = append(snapshot.Subscriptions, subscription)
+	}
+	return snapshot
 }
