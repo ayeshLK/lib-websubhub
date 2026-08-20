@@ -106,12 +106,16 @@ on the day a Go version is announced.
 ## 4. Continuous integration
 
 GitHub Actions is the CI/CD platform. Pull-request workflows use no repository
-secrets and default to read-only permissions:
+secrets. Jobs default to read-only permissions:
 
 ```yaml
 permissions:
   contents: read
 ```
+
+The dedicated coverage job additionally receives `id-token: write` solely to
+authenticate its Codecov upload through GitHub OIDC. It receives no repository
+secret or write access to repository contents.
 
 Workflows pin external actions to full commit SHAs. A comment beside each SHA
 records its release tag, and Dependabot proposes updates. Concurrency
@@ -132,10 +136,14 @@ Run on every pull request and push to the default branch:
    - run vet, build, and ordinary tests.
 3. **Primary validation**
    - use Go 1.26.x on Linux;
-   - run vet, build, ordinary tests, race tests, and coverage;
+   - run vet, build, ordinary tests, and race tests.
+4. **Coverage reporting**
+   - use Go 1.26.x to produce one atomic core coverage profile;
    - enforce at least 85% framework statement coverage and every
-     protocol-critical testing-matrix row.
-4. **Platform smoke tests**
+     protocol-critical testing-matrix row;
+   - upload through OIDC and require Codecov to prevent total coverage
+     regressions and enforce at least 85% changed-line coverage.
+5. **Platform smoke tests**
    - use Go 1.26.x on macOS and Windows;
    - build all packages and execute platform-independent tests and examples.
 
@@ -237,6 +245,8 @@ uses bounded retry. A failure never causes the workflow to replace the tag.
 Protect the default branch with a GitHub ruleset that requires pull requests,
 review, CI and security checks, and conversation resolution, and that blocks
 force pushes, deletion, and normal maintainer bypass.
+Require the `Coverage`, `codecov/project`, and `codecov/patch` status checks so
+an upload failure, total-coverage regression, or under-tested patch blocks merge.
 
 Protect tags matching `v*` so only the approved release process can create
 them, and block tag updates and deletion. Enable immutable GitHub Releases when
@@ -251,6 +261,7 @@ References:
 - [Building and testing Go with GitHub Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/go)
 - [Secure use of GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use)
 - [GitHub repository rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
+- [Codecov status checks](https://docs.codecov.com/docs/commit-status)
 - [GitHub immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 
 ## 7. Release readiness checklist
@@ -259,7 +270,8 @@ A release candidate is ready only when:
 
 - the module path is `github.com/ayeshLK/lib-websubhub` and the license is Apache-2.0;
 - both supported Go versions pass their required validation;
-- statement coverage is at least 85% and the protocol matrix is complete;
+- statement coverage is at least 85%, total coverage does not regress,
+  changed-line coverage is at least 85%, and the protocol matrix is complete;
 - race, fuzz-regression, cancellation, lifecycle, TLS, authentication-boundary,
   and credential-isolation tests pass;
 - the module graph contains no external dependency;

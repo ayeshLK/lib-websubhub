@@ -2,6 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ayeshLK/lib-websubhub.svg)](https://pkg.go.dev/github.com/ayeshLK/lib-websubhub)
 [![CI](https://github.com/ayeshLK/lib-websubhub/actions/workflows/ci.yml/badge.svg)](https://github.com/ayeshLK/lib-websubhub/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/ayeshLK/lib-websubhub/branch/main/graph/badge.svg)](https://codecov.io/gh/ayeshLK/lib-websubhub)
 [![License](https://img.shields.io/github/license/ayeshLK/lib-websubhub)](LICENSE)
 
 Build WebSub hubs in Go without giving up control of storage, delivery, or

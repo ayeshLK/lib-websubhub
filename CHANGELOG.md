@@ -47,3 +47,5 @@ All notable changes to this project will be documented here. The project uses
 - In-memory WebSub hub example.
 - Architecture, testing, documentation, and release plans.
 - Optional publisher extension using the `X-Go-Publisher` mode header.
+- Codecov reporting with an absolute 85% coverage floor, a zero-regression
+  project check, an 85% changed-line check, and a public README badge.
