@@ -11,6 +11,8 @@ All notable changes to this project will be documented here. The project uses
   `AGENTS.md`, leaving `docs/spec.md` as the durable framework document.
 - Move framework improvement tracking out of the normative specification while
   preserving its current API and conformance boundaries.
+- Rewrite `docs/spec.md` as a maintainer-facing, main-branch specification with
+  normative Go architecture, validation, execution, lifecycle, and security rules.
 - Automate semantic-version selection and changelog preparation through a
   reviewable release pull request.
 - Run release preparation only when a maintainer requests it.

@@ -1,942 +1,1058 @@
-# Go WebSubHub framework specification
+# WebSubHub Framework Specification
 
-Status: Draft 0.2
-Target: Go 1.25 or newer
-Dependencies: Go standard library only
-Protocol baseline: [W3C WebSub Recommendation, 2 June 2026](https://www.w3.org/TR/websub/)
+Main Branch Edition — August 2026
 
-Normative terms such as MUST, SHOULD, and MAY are interpreted as described by
-RFC 2119/RFC 8174.
+- Implementation baseline: Go sources in the repository root at this revision
+- Language baseline: Go 1.25 or newer
+- Dependency baseline: Go standard library only
+- Protocol baseline: [W3C WebSub Recommendation, 2 June 2026](https://www.w3.org/TR/websub/)
 
-## 1. Purpose and boundary
+This document specifies how `github.com/ayeshLK/lib-websubhub` is constructed
+and how its framework-owned behavior executes. It is written for maintainers and
+implementers of the package. Application developers should begin with the
+[README](../README.md), Go API documentation, and examples.
 
-The `websubhub` package is a thin WebSub protocol layer over Go's `net/http`.
-It translates HTTP requests into typed WebSub messages, invokes
-application-supplied callbacks, performs protocol-defined callback operations,
-and translates callback results into HTTP responses.
+## 1. Overview
 
-The framework deliberately does not implement a complete hub platform.
+`websubhub` is a thin, composable WebSub hub protocol framework for Go. It
+adapts one HTTP endpoint to typed application callbacks, coordinates
+subscription intent verification, and provides focused clients for publisher
+operations and one-subscriber content delivery.
+
+The framework is designed around five principles:
+
+1. **Protocol mechanics are separate from application state.** The package
+   parses, validates, verifies, and maps HTTP. It does not store topics or
+   subscriptions.
+2. **Observable work is bounded.** Request bodies, callback bodies, queues,
+   workers, timeouts, and shutdown are finite.
+3. **Application handoffs are typed.** Go function types and constructor
+   validation enforce callback shape and required combinations.
+4. **Wire data is preserved where the protocol requires it.** Callback query
+   bytes, payload bytes, content types, and signatures have explicit handling.
+5. **Ordinary Go composition remains available.** The handler implements
+   `http.Handler`; middleware, `http.Server`, `http.Client`, contexts, and TLS
+   retain their standard meanings.
+
+The package is not a complete hub product or subscriber implementation. A
+deployed hub must add persistence, lease expiry, fan-out, retry, authorization,
+and operational controls.
+
+## 2. Conformance and notation
+
+### 2.1 Normative language
+
+The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, MAY, and OPTIONAL are
+interpreted as described by
+[RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and
+[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174).
+
+All sections are normative unless marked **Note** or **Example**. Examples
+illustrate behavior but do not extend the contract.
+
+A conforming implementation MUST satisfy the observable requirements in this
+document. Algorithms MAY be reorganized or optimized when their externally
+observable HTTP behavior, callback order, error classification, concurrency,
+and lifecycle are equivalent.
+
+### 2.2 Terms
+
+- **Framework** means the `websubhub` package.
+- **Application** means code that constructs the framework and supplies
+  callbacks, storage, workers, middleware, and deployment policy.
+- **Admission callback** means the synchronous subscription or unsubscription
+  callback invoked before HTTP acceptance.
+- **Validation callback** means the optional asynchronous application check
+  performed after acceptance and before intent verification.
+- **Verified callback** means the required application handoff invoked only
+  after successful intent verification.
+- **Publisher extension** means the project-specific register, deregister,
+  content publication, and event notification protocol. It is not standardized
+  by WebSub.
+- **Detached value** means a map, slice, header, byte slice, or form value whose
+  mutable storage is not shared with the caller or inbound request.
+
+### 2.3 Framework conformance and WebSub conformance
+
+Conformance to this document means matching this Go framework contract. It does
+not by itself establish W3C hub or subscriber conformance. Section 15 identifies
+the WebSub behavior implemented by the framework and the behavior that a
+complete application must supply.
+
+## 3. Architecture and ownership
+
+### 3.1 Component model
+
+```text
+Inbound HTTP
+    -> Handler
+        -> bounded parsing and validation
+        -> synchronous admission callback
+        -> exact HTTP response mapping
+        -> bounded asynchronous validation
+        -> subscriber intent verification
+        -> verified callback
+
+Application delivery worker
+    -> DeliveryClient
+        -> one subscriber callback
+
+PublisherClient
+    -> extension-enabled Handler
+
+Publisher HTTP response
+    -> AddDiscoveryLinks
+```
+
+The framework MUST NOT infer application state from callback results. Only
+explicit typed callbacks cross the framework/application boundary.
+
+### 3.2 Framework-owned behavior
 
 The framework owns:
 
-- HTTP parsing and `hub.mode` dispatch;
-- WebSub parameter and media-type validation;
-- subscription and unsubscription intent-verification requests;
-- denial and compatibility error callbacks;
-- typed messages, results, and HTTP errors;
-- authenticated HTTP content delivery to one subscriber;
-- publisher discovery helpers and the optional publisher client;
-- bounded protocol work, cancellation, and safe HTTP defaults.
+- HTTP method, media type, form, URL, lease, secret, and header validation;
+- mode dispatch and safe HTTP response mapping;
+- bounded verification admission and worker lifecycle;
+- challenge generation and subscriber callback verification;
+- detached callback inputs and panic containment;
+- one delivery attempt to one subscription;
+- discovery Link-header construction;
+- the optional publisher extension client and handler protocol;
+- typed sentinel and HTTP errors.
+
+### 3.3 Application-owned behavior
 
 The application owns:
 
-- topic authorization, registration, storage, and deletion;
-- subscription storage and state transitions;
-- broker resource creation and deletion;
-- content persistence, fan-out, retry, acknowledgment, and dead-letter policy;
-- clustering, snapshots, state replication, and node ownership;
-- authentication, authorization, observability, health endpoints, and deployment.
-
-This thin boundary is the framework's primary architectural constraint.
-
-## 2. Scope
-
-Version 1 provides:
-
-1. an `http.Handler` for hub requests;
-2. typed callback functions for application-defined hub behavior;
-3. asynchronous validation and intent-verification orchestration;
-4. a single-subscriber `DeliveryClient`;
-5. a `PublisherClient` for the optional publisher extension;
-6. WebSub discovery Link-header helpers;
-7. typed error and response mapping.
-
-Subscriber discovery, a subscriber callback server, storage, message brokers,
-durable queues, and an opinionated in-memory hub are outside the core package.
-Examples MAY implement these facilities using application code.
-
-## 3. Architectural model
-
-```text
-HTTP request
-    -> websubhub.Handler
-        -> parse and validate protocol
-        -> invoke Service callback
-        -> write protocol response
-        -> validate and verify asynchronously when required
-        -> invoke verified callback
-
-Application delivery worker
-    -> websubhub.DeliveryClient
-        -> subscriber callback
-
-Publisher
-    -> websubhub.PublisherClient
-        -> hub endpoint
-```
-
-`Handler` never reads or writes application state. It does not enumerate
-subscriptions, create delivery workers, or decide retry and dead-letter policy.
-
-## 4. Package shape
-
-The initial module contains one public package:
-
-```text
-github.com/ayeshLK/lib-websubhub/
-    handler.go         HTTP adapter and callback orchestration
-    service.go         Service callbacks and result types
-    subscription.go    subscription types and verification
-    delivery.go        single-subscriber delivery client
-    publisher.go       publisher extension client and messages
-    discovery.go       Link advertisement helpers
-    errors.go          typed and sentinel errors
-    internal/...       bounded parsers and verification workers
-```
-
-Internal packages are not API commitments.
-
-## 5. Public API
-
-The signatures define the intended contract. The API remains subject to
-change while the module is pre-release.
-
-```go
-package websubhub
-
-type Config struct {
-    HubURL               string
-    DefaultLease         time.Duration
-    MaxLease             time.Duration
-    MaxRequestBody       int64
-    MaxCallbackBody      int64
-    VerificationTimeout time.Duration
-    VerificationWorkers int
-    VerificationQueue   int
-    HTTPClient           *http.Client
-    Logger               *slog.Logger
-
-    // Allows Controller.MarkVerified. Disabled by default.
-    AllowExternalVerification bool
-
-    // Enables register, deregister, publish, and notify extension modes.
-    EnablePublisherExtension bool
-
-    // Sends hub.mode=hub-error after a verified callback fails.
-    EnableHubErrorCallback bool
-}
-
-func NewHandler(Config, Service) (*Handler, error)
-
-type Handler struct { /* unexported */ }
-func (h *Handler) ServeHTTP(http.ResponseWriter, *http.Request)
-func (h *Handler) Close(context.Context) error
-
-type RequestMetadata struct {
-    Header     http.Header
-    RemoteAddr string
-}
-
-type Result struct {
-    StatusCode  int
-    Header      http.Header
-    ContentType string
-    Body        []byte
-}
-
-type Service struct {
-    OnRegisterTopic   RegisterTopicFunc
-    OnDeregisterTopic DeregisterTopicFunc
-    OnUpdateMessage   UpdateMessageFunc
-
-    OnSubscription           SubscriptionFunc
-    OnSubscriptionValidation SubscriptionValidationFunc
-    OnSubscriptionVerified   SubscriptionVerifiedFunc
-
-    OnUnsubscription           UnsubscriptionFunc
-    OnUnsubscriptionValidation UnsubscriptionValidationFunc
-    OnUnsubscriptionVerified   UnsubscriptionVerifiedFunc
-}
-
-type RegisterTopicFunc func(
-    context.Context, TopicRegistration, RequestMetadata,
-) (Result, error)
-
-type DeregisterTopicFunc func(
-    context.Context, TopicDeregistration, RequestMetadata,
-) (Result, error)
-
-type UpdateMessageFunc func(
-    context.Context, UpdateMessage, RequestMetadata,
-) (Result, error)
-
-type SubscriptionFunc func(
-    context.Context, Subscription, RequestMetadata, *Controller,
-) (Result, error)
-
-type SubscriptionValidationFunc func(
-    context.Context, Subscription, RequestMetadata,
-) error
-
-type SubscriptionVerifiedFunc func(
-    context.Context, VerifiedSubscription, RequestMetadata,
-) error
-
-type UnsubscriptionFunc func(
-    context.Context, Unsubscription, RequestMetadata, *Controller,
-) (Result, error)
-
-type UnsubscriptionValidationFunc func(
-    context.Context, Unsubscription, RequestMetadata,
-) error
-
-type UnsubscriptionVerifiedFunc func(
-    context.Context, VerifiedUnsubscription, RequestMetadata,
-) error
-
-type Controller struct { /* unexported */ }
-func (c *Controller) MarkVerified() error
-```
-
-Function fields match Go's normal callback style and allow optional operations
-without forcing applications to implement a large interface containing no-op
-methods. All supplied callbacks MUST be safe for concurrent invocation.
-
-`OnSubscriptionVerified` and `OnUnsubscriptionVerified` are required because
-they are the application handoff after verified intent. When
-`EnablePublisherExtension` is true, the three publisher callbacks are required.
-The initial subscription, unsubscription, and validation callbacks are optional
-and use documented defaults.
-
-`NewHandler` validates callback combinations. No compiler plugin, code
-generation, reflection-based method discovery, or custom static analyzer is
-required.
-
-## 6. Message types
-
-```go
-type Mode string
-
-const (
-    ModeSubscribe   Mode = "subscribe"
-    ModeUnsubscribe Mode = "unsubscribe"
-    ModeRegister    Mode = "register"
-    ModeDeregister  Mode = "deregister"
-    ModePublish     Mode = "publish"
-)
-
-type TopicRegistration struct {
-    Mode  Mode
-    Topic string
-}
-
-type TopicDeregistration struct {
-    Mode  Mode
-    Topic string
-}
-
-// Subscription represents a parsed WebSub subscription request while
-// retaining additional form parameters explicitly.
-type Subscription struct {
-    Hub          string
-    Mode         Mode
-    Callback     string
-    Topic        string
-    LeaseSeconds string // subscriber-requested value; empty when omitted
-    Secret       string
-    Parameters   url.Values
-}
-
-// The distinct type proves that intent verification succeeded. The effective
-// lease is kept separate from the subscriber's requested value.
-type VerifiedSubscription struct {
-    Subscription
-    EffectiveLeaseSeconds string
-    LeaseStartedAt        time.Time
-}
-
-type Unsubscription struct {
-    Mode       Mode
-    Callback   string
-    Topic      string
-    Secret     string
-    Parameters url.Values
-}
-
-type VerifiedUnsubscription struct {
-    Unsubscription
-}
-
-type UpdateKind uint8
-
-const (
-    UpdateEvent UpdateKind = iota
-    UpdateContent
-)
-
-type UpdateMessage struct {
-    Kind        UpdateKind
-    Topic       string
-    ContentType string
-    Body        []byte
-    Header      http.Header
-}
-```
-
-Unknown subscription and unsubscription form parameters are preserved but
-reserved WebSub parameters are exposed only through their typed fields. Mutable
-values are cloned before callback or asynchronous use. Topic registration and
-deregistration are closed protocol messages containing only mode and topic.
-
-Protocol-facing lease values and secrets are strings, matching the form wire
-format. Lease strings contain positive decimal
-seconds. An empty lease string means the subscriber omitted the parameter. An
-empty secret means no secret; an explicitly supplied empty secret is rejected.
-Secret length is measured in bytes and MUST be less than 200 bytes. Secrets MUST
-NOT appear in logs or error strings.
-
-Application-specific metadata such as broker queue names, node identifiers, and
-stale-state flags does not belong in these protocol messages. Applications can
-associate it with `(topic, callback)` in their own state model.
-
-## 7. HTTP request processing
-
-The handler accepts `POST`. Other methods receive `405 Method Not Allowed` and
-`Allow: POST`. It MUST:
-
-1. limit the body before parsing;
-2. require `application/x-www-form-urlencoded` for subscription, unsubscription,
-   registration, deregistration, and event-only extension requests;
-3. parse media types using `mime.ParseMediaType`;
-4. require UTF-8 for form requests and reject explicitly incompatible form
-   charsets;
-5. validate arbitrary publisher and distribution content types without
-   normalizing them or removing parameters;
-6. reject missing, empty, or duplicated required fields;
-7. reject malformed percent encoding, invalid URLs, invalid subscription leases,
-   and oversized bodies;
-8. accept and discard `hub.lease_seconds` on unsubscription without parsing or
-   exposing it;
-9. preserve unknown parameters and cloned headers;
-10. return safe bounded error bodies.
-
-Topic, hub, and callback values must be absolute HTTP(S) URLs. This enforces the
-WebSub definition of a topic as an HTTP or HTTPS resource URL before application
-callbacks run. Callback URLs with userinfo or fragments are rejected.
-
-After form or query decoding, the handler decodes percent-encoded ASCII
-unreserved characters (`ALPHA`, `DIGIT`, `-`, `.`, `_`, and `~`) in inbound
-topic and callback URLs. Reserved escapes, non-ASCII escapes, ordering, and all
-other URL bytes remain unchanged. Subscription, unsubscription, and publisher
-extension callbacks receive these normalized values. Applications may impose
-additional topic canonicalization, authorization, and deployment-specific
-callback or SSRF policy in callbacks or outer middleware; such policy must also
-be enforced by the application's outbound transport.
-
-## 8. Callback result mapping
-
-A zero `Result` selects the operation default:
-
-| Callback | Default success |
+- topic and verified-subscription persistence;
+- atomic renewal and unsubscription;
+- mandatory lease expiry;
+- content selection, fan-out, ordering, retry, acknowledgement, and dead-letter
+  policy;
+- brokers, databases, reconciliation, clustering, replication, and node
+  ownership;
+- inbound authentication and authorization;
+- callback and topic SSRF policy enforced at dial time;
+- TLS termination, outbound trust, quotas, rate limiting, observability, and
+  deployment lifecycle.
+
+Storage, broker, scheduler, authentication, TLS, and telemetry abstractions MUST
+NOT be added to the core package without deliberately revising this ownership
+boundary.
+
+## 4. Go package design
+
+### 4.1 Module and package
+
+The module path is `github.com/ayeshLK/lib-websubhub` and the root package name
+is `websubhub`. The core module and its tests use only the Go standard library.
+
+The implementation is divided by responsibility:
+
+| File | Responsibility |
 |---|---|
-| register/deregister | 200 and `hub.mode=accepted` |
-| update | 202 |
-| subscription/unsubscription | exactly 202 |
+| `handler.go` | construction, inbound dispatch, responses, queueing, shutdown |
+| `service.go` | public modes, messages, callbacks, configuration, controller |
+| `subscription.go` | asynchronous validation and intent-verification execution |
+| `delivery.go` | one-attempt subscriber delivery |
+| `publisher.go` | publisher extension client |
+| `discovery.go` | discovery Link headers |
+| `helpers.go` | validation, copying, URL normalization, HTTP helpers |
+| `errors.go` | sentinel and typed errors |
+| `challenge.go` | cryptographically random challenges |
 
-For subscription and unsubscription admission, status zero or 202 means
-accepted and the handler emits exactly `202 Accepted`. Any other 2xx or any 3xx
-returned through `Result` is an invalid callback result and produces 500. A
-4xx or 5xx `Result` is an explicit admission rejection and no verification is
-scheduled. Redirects use `RedirectError`, not `Result`.
+Unexported organization MAY change without affecting conformance.
 
-`Result` otherwise permits safe headers, content type, and body customization.
-The framework validates status codes and rejects hop-by-hop or
-response-splitting headers. Arbitrary valid content types retain their complete
-field value, including parameters.
+### 4.2 Callback representation
 
-Errors support `errors.Is` and `errors.As`:
+Application operations are Go function types stored in a `Service` value rather
+than methods on a large interface. This permits optional callbacks while normal
+Go assignment checks callback signatures.
 
-```go
-var (
-    ErrInvalidRequest     = errors.New("websubhub: invalid request")
-    ErrDenied             = errors.New("websubhub: denied")
-    ErrVerificationFailed = errors.New("websubhub: verification failed")
-    ErrSubscriptionGone   = errors.New("websubhub: subscription gone")
-    ErrDeliveryFailed     = errors.New("websubhub: delivery failed")
-    ErrQueueFull          = errors.New("websubhub: verification queue full")
-    ErrClosed             = errors.New("websubhub: closed")
-)
+Every callback MAY be invoked concurrently. A framework implementation MUST:
 
-type HTTPError struct {
-    Operation  string
-    StatusCode int
-    Header     http.Header
-    Body       []byte
-    Err        error
-}
+- invoke callbacks with the provided `context.Context`;
+- pass detached mutable values;
+- recover callback panics at the framework boundary;
+- convert a panic to a generic error that does not expose the panic value;
+- never pass the live `http.ResponseWriter` or request body to application
+  callbacks.
 
-type DeniedError struct {
-    Reason string
-    Err    error
-}
+### 4.3 Required callbacks
 
-type RedirectError struct {
-    StatusCode int
-    Location   string
-}
-```
+`Service.OnSubscriptionVerified` and
+`Service.OnUnsubscriptionVerified` are REQUIRED.
 
-`DeniedError` from an asynchronous validation callback causes a denied
-notification. `RedirectError` is valid from the initial subscription or
-unsubscription callback and only for 307 or 308. Its Location must be an
-absolute HTTP(S) URL without userinfo or a fragment.
+When `Config.EnablePublisherExtension` is true,
+`OnRegisterTopic`, `OnDeregisterTopic`, and `OnUpdateMessage` are REQUIRED.
+They MAY be nil while the extension is disabled.
 
-## 9. Subscription lifecycle
+Admission and validation callbacks are OPTIONAL. A missing admission callback
+accepts a valid request. A missing validation callback allows verification to
+continue.
 
-### 9.1 Initial callback
+### 4.4 Public API evolution
 
-After protocol parsing, `OnSubscription` or `OnUnsubscription` runs
-synchronously. A nil function means accept. It may reject, redirect, customize
-safe acceptance headers or body, or—when explicitly enabled—mark intent as
-already verified through `Controller`. Successful admission always produces
-exactly `202 Accepted`.
+The exported Go declarations and this specification MUST describe the same
+contract. A deliberate API or semantic change requires coordinated
+implementation, tests, Go documentation, README, specification, and changelog
+updates.
 
-If asynchronous work cannot be admitted to the bounded verification queue, the
-handler returns `503` and does not claim acceptance. Otherwise it sends `202`
-before asynchronous validation or verification begins.
+No compiler plugin, reflection-based callback discovery, code generator, or
+custom analyzer is required. Go type checking and `NewHandler` validation enforce
+the current structural invariants.
 
-Initial callbacks receive the request context. Work that continues after `202`
-uses a handler-owned context because `http.Request.Context` is cancelled when
-`ServeHTTP` returns. The asynchronous context is cancelled by the verification
-timeout or `Handler.Close`; request metadata needed later is copied explicitly.
+## 5. Protocol data model
 
-### 9.2 Asynchronous validation
+### 5.1 Modes
 
-`OnSubscriptionValidation` runs after `202` and before subscriber verification.
-It can check registered topics, authorization state, or eventually consistent
-application state. A nil callback allows the request.
+`Mode` is a string with these defined values:
 
-If it returns `DeniedError`, the framework sends a callback `GET` containing:
+| Constant | Wire value | Meaning |
+|---|---|---|
+| `ModeSubscribe` | `subscribe` | WebSub subscription |
+| `ModeUnsubscribe` | `unsubscribe` | WebSub unsubscription |
+| `ModeRegister` | `register` | extension topic registration |
+| `ModeDeregister` | `deregister` | extension topic deregistration |
+| `ModePublish` | `publish` | extension update |
 
-- `hub.mode=denied`;
-- `hub.topic`;
-- optional safe `hub.reason`.
+`UpdateKind` distinguishes `UpdateEvent` from `UpdateContent`. It is an
+in-process discriminator and has no independent wire representation.
 
-Unexpected validation failures are logged and reported through an optional
-hub-error callback when enabled.
+### 5.2 Subscription values
 
-`OnUnsubscriptionValidation` follows the same application hook model, but an
-application must not use it for publisher validation forbidden by WebSub.
+A `Subscription` contains:
 
-### 9.3 Intent verification
+- configured hub URL;
+- mode `subscribe`;
+- normalized callback and topic URLs;
+- original requested lease string, or an empty string when omitted;
+- optional secret;
+- detached unknown form parameters.
 
-Unless `Controller.MarkVerified` was used, the framework sends a callback `GET`
-with mode, topic, a cryptographically random single-use challenge, and the
-effective lease for subscriptions. After the required unreserved-character
-normalization during admission, the callback's existing `RawQuery` is preserved
-byte-for-byte and the newly encoded parameters are appended after it. Existing
-ordering, reserved escaping, duplicate keys, empty values, and overlapping
-WebSub-named keys are not parsed, normalized, or overwritten.
+A `VerifiedSubscription` anonymously contains that subscription and adds:
 
-Redirects are not followed. The response body is bounded. Verification succeeds
-only for a 2xx status and a body exactly equal to the challenge.
+- `EffectiveLeaseSeconds`, the selected positive decimal lease;
+- `LeaseStartedAt`, the time at which verification processing selected the
+  effective lease.
 
-`MarkVerified` is permitted only when `AllowExternalVerification` is true. By
-calling it, the application asserts that it has performed equivalent intent
-verification. The framework does not treat it as an automatic or unsafe bypass.
+An `Unsubscription` contains mode, normalized callback and topic, optional
+secret, and detached unknown parameters. It does not expose a lease field.
+Submitted `hub.lease_seconds` values are accepted and ignored for
+unsubscription, including malformed or duplicated values.
 
-### 9.4 Verified callback
+A `VerifiedUnsubscription` contains the unsubscription after successful intent
+verification.
 
-After successful verification, the framework invokes
-`OnSubscriptionVerified` or `OnUnsubscriptionVerified`. This is the only state
-handoff:
+### 5.3 Publisher and delivery values
 
-- an in-memory application can update a map;
-- a database-backed application can commit a row;
-- a broker-backed application can provision/delete a consumer and emit a state
-  event;
-- a clustered application can assign node ownership and replicate the change.
+`TopicRegistration` and `TopicDeregistration` contain only their fixed mode and
+normalized topic.
 
-The framework performs none of these actions. Callback errors are logged. When
-`EnableHubErrorCallback` is true, it sends the project-specific
-`hub.mode=hub-error` notification with a safe reason.
+`UpdateMessage` contains its kind, normalized topic, complete content type,
+exact body bytes, and detached request headers. Event notifications have
+`UpdateEvent` and no content body. Content publications have `UpdateContent`.
 
-For subscriptions, `EffectiveLeaseSeconds` is the hub-selected positive
-decimal lease sent during verification and `LeaseStartedAt` is the time that
-verification request was initiated. The framework does not persist
-subscriptions, calculate a stored expiration timestamp, schedule expiry, or
-delete expired state. Applications calculate and enforce expiry from these
-values.
+`ContentDistribution` contains one complete content type, exact body bytes, and
+detached custom headers for one subscriber delivery. `DeliveryResponse`
+contains the subscriber status, detached headers, and bounded response body.
 
-Applications must ensure that renewal replaces active state only after
-verification and that failed verification leaves the previous state unchanged.
+### 5.4 Request metadata
 
-## 10. Single-subscriber content delivery
+`RequestMetadata` contains a detached `http.Header` and the inbound
+`RemoteAddr`. Authentication middleware MAY attach values to the request
+context; asynchronous callbacks retain those context values as described in
+Section 13.
 
-The package provides transport, not fan-out:
+Headers may contain credentials or capability information. The framework MUST
+not log metadata values.
 
-```go
-type DeliveryConfig struct {
-    HTTPClient     *http.Client
-    Timeout        time.Duration
-    MaxResponseBody int64
-}
+### 5.5 Result values
 
-type ContentDistribution struct {
-    ContentType string
-    Body        []byte
-    Header      http.Header
-}
+`Result` controls a synchronous handler response:
 
-type DeliveryResponse struct {
-    StatusCode int
-    Header     http.Header
-    Body       []byte
-}
+- `StatusCode` zero selects the operation default;
+- `Header` contains additional response headers;
+- `ContentType` contains a complete media type;
+- `Body` contains exact response bytes.
 
-func NewDeliveryClient(Subscription, DeliveryConfig) (*DeliveryClient, error)
-func (c *DeliveryClient) Deliver(
-    context.Context, ContentDistribution,
-) (DeliveryResponse, error)
-```
+The framework MUST detach `Header` and `Body` before using them after a callback
+returns.
 
-Each delivery:
+### 5.6 Error model
 
-1. is bound to the hub, topic, callback, and secret of the `Subscription`
-   supplied to `NewDeliveryClient`;
-2. POSTs the exact body to the exact callback;
-3. preserves callback query values;
-4. validates and sends the complete supplied content type without removing
-   charset, boundary, or other parameters;
-5. adds `rel=hub` and `rel=self` Link values from the subscription;
-6. adds `X-Hub-Signature: sha256=<hex>` when a secret exists;
-7. refuses redirects;
-8. returns success for any 2xx;
-9. returns an error matching `ErrSubscriptionGone` for 410;
-10. returns a typed `HTTPError` for other failures;
-11. bounds and closes the response body.
+The package defines these classifications:
 
-The client does not add a delivery identifier or other project-specific
-extension header.
+| Error | Meaning |
+|---|---|
+| `ErrInvalidRequest` | invalid input or configuration |
+| `ErrDenied` | application denial |
+| `ErrVerificationFailed` | subscriber verification failure |
+| `ErrSubscriptionGone` | subscriber returned HTTP 410 |
+| `ErrDeliveryFailed` | content delivery failure |
+| `ErrPublisherFailed` | publisher extension client failure |
+| `ErrQueueFull` | verification capacity exhausted |
+| `ErrClosed` | handler admission is closed |
+| `ErrExternalVerificationDisabled` | disabled external verification |
+| `ErrAlreadyVerified` | repeated external-verification mark |
 
-The client performs one logical delivery attempt. The application decides
-whether and when to retry, acknowledge, negatively acknowledge, dead-letter,
-mark stale, or delete subscription state.
+`HTTPError` carries a safe operation name, status code, detached headers,
+bounded body, and wrapped classification. `DeniedError` carries an optional
+subscriber-safe reason and application cause. `RedirectError` carries an HTTP
+307 or 308 status and redirect location.
 
-The client never mutates a caller-supplied `http.Client`. It copies the client
-value and installs redirect refusal on the copy.
+Errors MUST support normal `errors.Is` and `errors.As` inspection.
+Framework-generated protocol and remote-response errors MUST NOT include
+secrets, authorization values, or payload bodies. Returned `net/http` transport
+errors may include destination details; applications MUST treat them as
+sensitive and apply log redaction.
 
-## 11. Publisher support
+## 6. Configuration and construction
 
-`AddDiscoveryLinks` appends one `rel=self` and one or more `rel=hub` Link
-relations without overwriting unrelated fields.
+### 6.1 Handler configuration
 
-WebSub leaves publisher-to-hub notification unspecified. The package implements
-an optional project-specific extension:
+`Config.HubURL` is REQUIRED and MUST be an absolute HTTP or HTTPS URL without
+userinfo or a fragment.
 
-- register topic;
-- deregister topic;
-- publish content;
-- notify that a topic changed;
-- parse `X-Go-Publisher: publish|event` to select the update mode.
-
-```go
-type PublisherClientConfig struct {
-    HubURL          string
-    HTTPClient      *http.Client
-    MaxResponseBody int64
-}
-
-func NewPublisherClient(PublisherClientConfig) (*PublisherClient, error)
-func (c *PublisherClient) RegisterTopic(context.Context, string) error
-func (c *PublisherClient) DeregisterTopic(context.Context, string) error
-func (c *PublisherClient) Publish(context.Context, UpdateMessage) error
-func (c *PublisherClient) Notify(context.Context, string) error
-```
-
-The extension is separately documented and excluded from the W3C conformance
-claim.
-
-## 12. Configuration defaults
-
-Zero values select finite defaults; negative durations, counts, or byte limits
-are invalid. DefaultLease and MaxLease must resolve to positive whole-second
-durations because WebSub lease values are decimal seconds.
+Zero values select these defaults:
 
 | Field | Default |
 |---|---|
-| default/max lease | 10 days / 10 days |
-| request body | 64 KiB |
-| callback response body | 4 KiB |
-| verification timeout | 10 seconds |
-| verification workers/queue | 4 / 1,024 |
-| HTTP client | package-owned client with cloned `http.DefaultTransport` |
-| logger | discard logger |
-| external verification | disabled |
-| publisher extension | disabled |
-| hub-error compatibility callback | disabled |
-
-Delivery client defaults are 30 seconds and 64 KiB.
-
-## 13. Lifecycle and concurrency
-
-- `ServeHTTP` and all clients are safe for concurrent use.
-- Verification work uses a fixed worker count and bounded queue.
-- `Handler.Close` is idempotent, stops admission, and drains accepted protocol
-  work until its context ends.
-- The handler does not close caller-owned HTTP clients or application resources.
-- Applications close brokers, stores, workers, and servers themselves.
-- Panics from callbacks are recovered at the framework boundary and converted to
-  safe failures.
-- Callback values are cloned before crossing goroutine boundaries.
-
-The framework does not guarantee ordering between separate requests. The
-application owns concurrency control for its topic and subscription state.
-
-## 14. Security model and current limitations
-
-This section maps the
-[WebSub Security Considerations](https://www.w3.org/TR/websub/#security-considerations)
-to the current package. "Application" below includes outer `net/http`
-middleware, the hub implementation, subscriber software, and deployment
-configuration. A feature marked unsupported is not made safe merely by using
-the framework's default configuration.
-
-| W3C concern | Current status | Responsibility and limitation |
-|---|---|---|
-| HTTPS for all requests | Not enforced | HTTP and HTTPS URLs are accepted. The package neither upgrades HTTP nor selects an HTTPS alternative. Applications must configure server TLS and require HTTPS by policy. |
-| Safe discovery | Outside scope | `AddDiscoveryLinks` writes Link headers, but the package does not discover hubs from HTTP bodies or HTML. Subscriber discovery code must decide whether to inspect only the HTML `head`; untrusted `body` links must not silently select a hub. |
-| HTTPS, unique capability callback URLs | Not supported | The package validates callback syntax but accepts HTTP callbacks and does not generate subscriber callback URLs. Subscribers must create unguessable URLs, serve them over HTTPS, and protect their lifecycle. |
-| Subscriber use of `hub.secret` | Not enforced | A non-empty secret is accepted and preserved, but remains optional. The package does not generate secrets or assess their entropy. |
-| Short-lived leases | Partially implemented | The default and maximum lease are 10 days, and requested leases are clamped to the configured maximum. Operators can configure a different maximum. Persistence and expiry of verified state remain application responsibilities. |
-| Random, single-use challenge | Implemented | Each verification uses 32 bytes from `crypto/rand`, encoded as 43 URL-safe ASCII characters. Success requires a 2xx response whose complete bounded body exactly equals that challenge. |
-| XSS-safe verification response | Subscriber-side; unsupported | The package does not provide a subscriber callback server and does not require a safe verification response media type or `X-Content-Type-Options: nosniff`. Subscribers must use a safe type such as `application/octet-stream` and set `nosniff`, as required by WebSub. The hub does not inspect these response headers. |
-| Challenge download restrictions | Subscriber-side; unsupported | Subscriber implementations must bound and validate `hub.challenge`. Framework-generated challenges are fixed-length URL-safe text, but the package provides no subscriber request parser that enforces this. |
-| Exact callback for distribution | Implemented | `DeliveryClient` posts to the callback captured in the subscription, including its scheme and query, and refuses redirects. |
-| Signing when a secret exists | Implemented | `DeliveryClient` signs the exact transmitted body with HMAC-SHA256 and sends `X-Hub-Signature: sha256=<hex>`. |
-| Signature algorithm choice | SHA-256 only | SHA-1, SHA-384, SHA-512, multiple signatures, and algorithm negotiation are not implemented. SHA-256 satisfies the W3C security recommendation to use at least SHA-256 when transport may be compromised. |
-| Subscriber signature validation | Subscriber-side; unsupported | The package sends signatures but has no subscriber component to parse, verify in constant time, or reject invalid distribution requests. |
-| Header integrity | Not provided by HMAC | WebSub HMAC covers only the request body. Link, content type, and application-supplied headers are not authenticated by the signature and must not be trusted without authenticated TLS or separate application protection. |
-| Topic and callback URL privacy | Application-owned | URLs may contain identifying information and are exposed to application callbacks and protocol peers. The package provides no retention, erasure, access-control, or privacy-policy mechanism. |
-
-### 14.1 Transport security
-
-The package has no TLS configuration abstraction. Inbound TLS belongs to
-`http.Server`; outbound trust roots, client certificates, proxies, DNS policy,
-and TLS version policy belong to an injected `http.Client` and its
-`http.Transport`. The package preserves an `https` callback and refuses
-verification and delivery redirects, but its default clients also permit plain
-HTTP. It does not implement automatic HTTP-to-HTTPS upgrade, certificate
-pinning, mutual TLS configuration, or downgrade detection.
-
-The configured public `HubURL` is authoritative. The handler does not derive it
-from untrusted `Host`, `Forwarded`, or `X-Forwarded-*` headers.
-
-### 14.2 Discovery
-
-The core package is not a subscriber and does not parse HTML, Atom, RSS, or HTTP
-response bodies for discovery. Consequently, it does not implement the W3C
-recommendation to avoid attacker-supplied `link` elements in an HTML `body`.
-Subscriber discovery code must define a safe parsing boundary, prefer HTTPS hub
-links, and treat every discovered hub URL as untrusted input.
-
-`AddDiscoveryLinks` only validates and appends application-supplied `rel=self`
-and `rel=hub` Link values. It does not establish that the caller controls either
-URL.
-
-### 14.3 Subscription and intent verification
-
-The framework implements hub-side challenge generation and comparison. A new
-challenge is created for every subscribe or unsubscribe verification request;
-it is never accepted through a later framework endpoint. Callback response
-bodies and verification time are bounded, and redirects are refused.
-
-The following controls are not currently provided:
-
-- mandatory HTTPS for hub, topic, or callback URLs;
-- subscriber capability-URL generation or callback access control;
-- mandatory use, generation, strength checks, storage, or rotation of
-  `hub.secret`;
-- subscriber-side verification responses using a safe media type such as
-  `application/octet-stream` and `X-Content-Type-Options: nosniff`;
-- subscriber-side validation of challenge length and character set; and
-- automatic expiration or deletion of application-owned subscription state.
-
-When `AllowExternalVerification` is enabled, `Controller.MarkVerified` lets the
-application assert that equivalent intent verification already occurred. The
-framework cannot validate that assertion; enabling it transfers challenge
-freshness, binding, replay prevention, and audit responsibility to the
-application.
-
-### 14.4 Authenticated distribution
-
-`DeliveryClient` binds one delivery client to an immutable snapshot of the hub,
-topic, callback, and secret. When a secret is present it always emits one
-HMAC-SHA256 signature over the exact body. It does not sign headers. Applications
-must therefore use HTTPS when header integrity or confidentiality matters.
-
-The framework does not implement subscriber-side signature validation, replay
-detection, delivery nonce validation, deduplication, retry limits, or
-dead-letter policy. It also does not require a secret. Subscriber implementations
-must parse the declared algorithm, compare signatures without timing leaks, and
-discard a payload whose signature fails. Delivery retry and continued attempts
-for active subscriptions remain hub-application responsibilities.
-
-### 14.5 SSRF, abuse resistance, and content safety
-
-Syntactic HTTP(S) URL validation is not an SSRF defense. By default, callback
-verification and content delivery can connect to loopback, link-local, private,
-metadata-service, and other addresses reachable by the process. DNS rebinding,
-proxy or custom `RoundTripper` behavior, and address changes between validation
-and dialing must be considered. Untrusted
-deployments must apply callback/topic authorization and enforce destination
-policy at dial time with a restricted `http.Transport` or network boundary.
-
-The framework bounds request and response bodies, verification concurrency, and
-the verification queue. These are resource bounds, not a complete denial-of-
-service defense. It does not provide authentication, authorization, per-principal
-quotas, rate limiting, connection limits, replay protection, audit logging,
-abuse detection, or distributed admission control. The project-specific
-publisher extension is disabled by default and must be protected with middleware
-when enabled.
-
-Publisher and distribution bodies are opaque bytes. The package validates media
-type syntax but does not scan, sanitize, or classify HTML, scripts, malware, or
-other active content. Subscribers must treat delivered content according to its
-media type and rendering context.
-
-### 14.6 Secrets, logging, and privacy
-
-The core implementation does not log `hub.secret`, authorization values,
-signatures, callback bodies, or distribution payloads. Applications receive
-cloned request headers and protocol values, so their callbacks, middleware,
-stores, and loggers must apply redaction and access control. Topic and callback
-URLs may contain personally identifying or tenant-specific information. A
-callback URL may intentionally be an unguessable bearer capability, so the
-complete URL, including its query, must be treated as sensitive and excluded
-from routine logs. Do not add unrelated credentials to protocol URLs.
-
-The package has no durable storage and therefore provides no encryption at rest,
-retention, erasure, tenant isolation, or backup policy. Those controls belong to
-the application that persists topics and verified subscriptions. JWT, JWKS,
-OAuth, Prometheus, OpenTelemetry, and vendor-specific security or observability
-remain middleware/application concerns.
-
-## 15. W3C conformance and ownership analysis
-
-This section audits the package against the hub- and subscriber-facing flows in
-the [W3C WebSub Recommendation](https://www.w3.org/TR/websub/). "Not included"
-means the core package supplies no orchestration or state for that behavior; an
-application may implement it around the package. The package alone is neither a
-complete deployable hub nor a WebSub subscriber. Conformance is a property of the
-assembled application.
-
-The tables document current ownership boundaries.
-
-The W3C defines separate
-[hub](https://www.w3.org/TR/websub/#hubs) and
-[subscriber](https://www.w3.org/TR/websub/#subscribers) conformance classes;
-the boundaries below are grouped by the actor that must supply the behavior.
-
-### 15.1 Discovery and canonical topic selection
-
-The W3C [Discovery](https://www.w3.org/TR/websub/#discovery) flow requires a
-subscriber to retrieve the topic with GET or HEAD, inspect HTTP Link headers
-first, then inspect embedded HTML or XML links when headers are absent. It also
-defines [content-negotiation](https://www.w3.org/TR/websub/#content-negotiation)
-behavior through representation-specific `rel=self` URLs.
-
-| Flow | Current support | Boundary or owner |
-|---|---|---|
-| Publisher advertises `rel=self` and one or more `rel=hub` links | Partial | `AddDiscoveryLinks` appends HTTP Link headers. It does not generate embedded HTML, Atom, or RSS links. |
-| Subscriber GET/HEAD discovery and Link parsing order | Not included | There is no discovery client or Link-header parser. |
-| Embedded HTML/XML discovery | Not included | There is no HTML, Atom, RSS, or generic XML parser. |
-| Representation and language negotiation | Not included | Publisher and subscriber code must agree on and retain the discovered canonical self URL. |
-| Subscribe to one or more advertised hubs | Not included | There is no subscriber-side multi-hub selection, failover, or duplicate-event policy. |
-| Confirm that `hub.topic` is the publisher-advertised self URL | Application policy | The framework validates an absolute HTTP(S) URL but does not fetch the topic or compare discovery metadata. `OnSubscriptionValidation` may enforce this. |
-
-### 15.2 Subscriber request client and subscription state
-
-The package does not implement the subscriber actor described by
-[Subscribing and Unsubscribing](https://www.w3.org/TR/websub/#subscribing-and-unsubscribing)
-and [Subscriber Sends Subscription Request](https://www.w3.org/TR/websub/#subscriber-sends-subscription-request).
-There is no `SubscriberClient` or subscriber state machine.
-
-The following subscriber responsibilities are not included:
-
-- constructing subscribe and unsubscribe form requests and attaching
-  hub-specific headers or credentials;
-- generating a unique capability callback URL and cryptographically random
-  `hub.secret`;
-- following a hub's 307 or 308 response and retrying at the new hub URL;
-- recording pending intent keyed by topic, hub, callback, and mode before sending
-  the request;
-- handling the asynchronous delay between HTTP 202 and verification;
-- persisting the verified effective lease and scheduling renewal before expiry;
-- changing callback capability URLs or secrets on renewal;
-- processing a later `hub.mode=denied` notification; and
-- coordinating subscriptions to multiple hubs.
-
-### 15.3 Hub subscription lifecycle
-
-The handler implements the core HTTP and verification parts of
-[subscription requests](https://www.w3.org/TR/websub/#subscriber-sends-subscription-request),
-[subscription validation](https://www.w3.org/TR/websub/#subscription-validation),
-and [intent verification](https://www.w3.org/TR/websub/#hub-verifies-intent):
-form parsing, exact 202 acceptance, optional asynchronous validation, denial
-callbacks, 307/308 initial redirects, random challenges, exact challenge-body
-comparison, percent-encoded unreserved-character normalization, and verified
-callbacks. It also permits renewal requests to proceed to verification.
-
-The following hub lifecycle behavior is not owned or enforced by the framework:
-
-| Requirement or flow | W3C level | Current boundary |
-|---|---|---|
-| Optional publisher validation | MAY | `OnSubscriptionValidation` can call publisher-specific code, but the package defines no standard publisher-validation protocol or client. |
-| No publisher validation during unsubscription | Required flow rule | The framework makes no publisher call itself. It cannot prevent an application from incorrectly doing so inside `OnUnsubscriptionValidation`; that callback must be limited to hub policy and state validation. |
-| Atomic renewal and unsubscription override | MUST | The framework emits verified messages but has no state store or transaction boundary. The application must replace or remove the topic/callback entry only after verification and leave prior state unchanged on failure. |
-| Mandatory lease expiration | MUST | The framework calculates `EffectiveLeaseSeconds` and `LeaseStartedAt` but does not expire or delete state. A conforming hub application must enforce expiry and must not create perpetual subscriptions. |
-| Optional periodic reconfirmation | OPTIONAL | No scheduler or reconfirmation API is provided. |
-| Durable recovery | Not specified | Pending verification jobs and verified subscription state are in memory or application-owned; no restart recovery, reconciliation, or clustered ownership is provided. |
-
-Synchronous admission callbacks must not be used to perform the asynchronous
-publisher validation described by WebSub. If they perform slow external work,
-the initial response time and the intended 202-before-validation flow become
-application-dependent.
-
-### 15.4 Subscriber intent callback
-
-The subscriber side of
-[Verification Details](https://www.w3.org/TR/websub/#verification-details) is
-not included. The package has no callback handler that:
-
-- distinguishes intent GET requests from distribution POST requests;
-- matches `hub.mode` and `hub.topic` against locally pending intent;
-- validates the challenge character set and length;
-- returns the exact challenge with 2xx for approved intent or 404 otherwise;
-- emits a safe response media type and `X-Content-Type-Options: nosniff`;
-- ignores `hub.lease_seconds` on unsubscription;
-- commits local subscriber state only after accepting verification; or
-- receives and acts on later `hub.mode=denied` notifications.
-
-Subscriber-facing APIs are outside the current module scope.
-
-### 15.5 Publishing and subscription migration
-
-WebSub deliberately leaves the publisher-to-hub notification mechanism open in
-[Publishing](https://www.w3.org/TR/websub/#publishing). The package's
-`PublisherClient` and register, deregister, event, and content modes are
-project-specific extensions, not W3C-defined wire operations.
-
-[Subscription Migration](https://www.w3.org/TR/websub/#subscription-migration)
-is subscriber- and publisher-driven and is not implemented. There is no
-subscriber renewal process that re-fetches the old topic, follows its redirect,
-discovers a new self URL or hub, and establishes replacement state. The previous
-hub requires no special migration operation, so none is added to the hub API.
-
-### 15.6 Hub content distribution
-
-`DeliveryClient` implements one POST attempt, preserves the exact callback and
-content type, sends the supplied body, classifies response status, refuses
-redirects, adds Link headers, and signs with HMAC-SHA256 when a secret exists.
-Signing follows
-[Authenticated Content Distribution](https://www.w3.org/TR/websub/#signing-content).
-The remaining
-[Content Distribution](https://www.w3.org/TR/websub/#content-distribution)
-workflow is application-owned or absent:
-
-| Requirement or flow | W3C level | Current boundary |
-|---|---|---|
-| Select and distribute the full current representation | MUST | The framework cannot fetch, persist, or determine completeness of topic content. `ContentDistribution.Body` is trusted as complete. |
-| Match the topic representation's Content-Type | MUST | The client preserves the complete caller-supplied value but cannot fetch the topic or verify that the value matches its current representation. |
-| Atom/RSS reduced-feed delivery | MAY | No format-aware diff or already-delivered entry filtering is provided. |
-| Ignore subscriber response bodies | MUST | The client reads a bounded response body and exposes it in `DeliveryResponse` for diagnostics. Applications must not assign WebSub protocol meaning to it. |
-| Fan-out and ordering | Required hub behavior; ordering unspecified | The client targets one subscription. Enumeration, concurrency, ordering, backpressure, and per-topic sequencing are application responsibilities. |
-| Retry with limits | SHOULD | No automatic retry, delay, backoff, jitter, or retry budget is provided. |
-| Keep a failing subscription active | MUST | The client reports failure but has no subscription state. The application must retain it until lease expiry and attempt later updates despite earlier failures. |
-| HTTP 410 handling | MAY | `ErrSubscriptionGone` is returned, but termination is an application decision. |
-| Delivery deduplication | Not specified | No event identifier semantics, replay ledger, idempotency key, or deduplication store is defined. |
-
-### 15.7 Subscriber content distribution
-
-The package does not provide the subscriber callback POST flow or the
-[signature-validation](https://www.w3.org/TR/websub/#signature-validation)
-flow. A subscriber implementation still needs to:
-
-- accept arbitrary topic media types and retain the exact request bytes needed
-  for signature verification;
-- locate local active subscription state from its callback capability, not from
-  distribution Link headers;
-- require `X-Hub-Signature` when its subscription used a secret;
-- parse a recognized algorithm and verify HMAC using a timing-safe comparison;
-- discard missing or invalid authenticated deliveries;
-- treat headers as unauthenticated unless protected by HTTPS;
-- return a prompt 2xx to acknowledge receipt or optionally 410 for a deleted
-  subscription; and
-- separate receipt acknowledgment from asynchronous content processing.
-
-No subscriber persistence, handler middleware, message dispatch, deduplication,
-or callback lifecycle is supplied.
-
-### 15.8 Conformance consequence
-
-A complete hub built on this package must add at least verified subscription
-storage, atomic renewal and removal, mandatory lease expiry, complete-content
-selection, content-correct discovery metadata, fan-out, bounded retry, and
-continued delivery attempts for active subscriptions. Optional publisher
-validation and periodic reconfirmation may be omitted because WebSub marks them
-optional.
-
-A complete subscriber requires a separate discovery client, subscription client,
-pending-intent store, safe verification/denial handler, renewal and migration
-scheduler, distribution callback, and authenticated-delivery validator. The
-current module should not claim subscriber conformance.
-
-## 16. Standard-library and extension policy
-
-The core module has no third-party dependencies. Broker-backed applications may
-use external Kafka, JMS, Solace, database, authentication, or telemetry modules
-without adding those dependencies to `websubhub` itself.
-
-No compiler plugin is planned. Go's compiler validates callback function types,
-`NewHandler` validates required callback presence and configuration, and normal
-tests validate runtime combinations. A custom `go vet` analyzer remains outside
-scope while compilation and constructor validation express all API invariants.
-
-## 17. Conformance boundary
-
-The framework implements the protocol portions below. Because the module
-intentionally delegates MUST-level behavior described in Section 15, this list
-defines an implementation boundary rather than a standalone W3C hub conformance
-claim. A complete assembled hub may claim conformance only after supplying the
-missing behavior.
-
-- subscription and unsubscription request parsing;
-- exact 202 acceptance, denial, redirects, and intent verification;
-- finite effective lease selection and verification start metadata;
-- decoding of percent-encoded unreserved topic and callback URL characters;
-- preservation of the normalized callback query with appended protocol parameters;
-- authenticated single-subscriber delivery;
-- complete delivery content type and subscription-bound Link headers.
-
-Application conformance responsibilities include:
-
-- canonical topic validation;
-- storing only verified subscriptions;
-- atomic renewal and unsubscription semantics;
-- lease expiration in application state;
-- complete-content selection;
-- delivery retry policy and continued attempts for active subscriptions;
-- topic, subscriber, and publisher authorization.
-
-The publisher and hub-error behaviors are project-specific extensions and are
-excluded from the standards claim.
-
-## 18. Compatibility policy
-
-The module follows semantic versioning. Exported API removals or incompatible
-semantic changes require a major version. Protocol fixes may tighten rejection
-of invalid input in a minor release and must be called out in release notes.
-
-The initial minimum is Go 1.25. New framework releases support the two Go major
-versions supported by the Go project at release time.
+| `DefaultLease` | 10 days |
+| `MaxLease` | 10 days |
+| `MaxRequestBody` | 64 KiB |
+| `MaxCallbackBody` | 4 KiB |
+| `VerificationTimeout` | 10 seconds |
+| `VerificationWorkers` | 4 |
+| `VerificationQueue` | 1,024 |
+| `HTTPClient` | package client using a clone of `http.DefaultTransport` |
+| `Logger` | discard logger |
+| `AllowExternalVerification` | false |
+| `EnablePublisherExtension` | false |
+| `EnableHubErrorCallback` | false |
+
+Durations, counts, and body limits MUST NOT be negative. Default and maximum
+leases MUST be positive whole-second durations, and the default MUST NOT exceed
+the maximum.
+
+### 6.2 Handler construction algorithm
+
+`NewHandler(config, service)` performs these steps:
+
+1. Validate and apply configuration defaults.
+2. Require both verified callbacks.
+3. If the publisher extension is enabled, require all three publisher
+   callbacks.
+4. Create a handler-owned cancellation context.
+5. Copy the supplied `http.Client` value, if any.
+6. Install redirect refusal on the client copy.
+7. Apply `VerificationTimeout` as the client timeout only when the supplied
+   client has no timeout.
+8. Allocate the bounded verification queue.
+9. Start exactly `VerificationWorkers` workers.
+10. Return the handler.
+
+Construction failure MUST NOT return a partially usable handler. The supplied
+`http.Client` and its fields MUST NOT be mutated.
+
+### 6.3 Delivery and publisher clients
+
+`DeliveryConfig` defaults to a 30-second timeout and a 64 KiB subscriber
+response limit. Negative values are invalid.
+
+`PublisherClientConfig.HubURL` is REQUIRED and rejects userinfo and fragments.
+Its response limit defaults to 64 KiB. The publisher client uses the same
+copy-and-refuse-redirect client policy and a 30-second default timeout.
+
+Constructed handlers and clients are safe for concurrent use.
+
+## 7. Common validation and copying
+
+### 7.1 Body bounds
+
+Inbound handler bodies MUST be limited with `http.MaxBytesReader` before
+`io.ReadAll`. Outbound response bodies MUST be read through a limit-plus-one
+strategy so an oversized response is distinguishable from an exactly bounded
+response. Every outbound response body MUST be closed.
+
+### 7.2 Media types
+
+Every inbound handler request requires a syntactically valid `Content-Type`
+parsed with `mime.ParseMediaType`.
+
+Form operations require `application/x-www-form-urlencoded`. An omitted
+`charset` is accepted. An explicit charset is accepted only when it is UTF-8,
+case-insensitively.
+
+Publisher content and delivery content types may be any syntactically valid
+media type. Their complete caller-supplied value, including parameters, MUST be
+preserved.
+
+### 7.3 Form fields
+
+`hub.mode`, `hub.topic`, and `hub.callback` are required where defined. A
+required field MUST occur exactly once and MUST be non-empty.
+
+Unknown subscription and unsubscription parameters MUST be preserved in a
+detached `url.Values` after reserved fields are removed. Registration and update
+messages do not retain unknown parameters.
+
+Malformed form percent encoding is invalid.
+
+### 7.4 URL validation and normalization
+
+Hub, topic, and callback values MUST be absolute HTTP or HTTPS URLs with a
+non-empty host.
+
+Hub and callback URLs reject userinfo and fragments. Topic URLs are validated as
+absolute HTTP(S) URLs but the current implementation does not separately reject
+userinfo or fragments.
+
+After form or query decoding, inbound topic and callback strings are normalized
+by decoding percent-encoded ASCII unreserved bytes:
+
+```text
+ALPHA / DIGIT / "-" / "." / "_" / "~"
+```
+
+Reserved escapes, non-ASCII escapes, escape case, ordering, duplicate query
+keys, empty query values, and all other bytes remain unchanged.
+
+URL validation is syntactic. It MUST NOT be represented as SSRF protection.
+
+### 7.5 Lease and secret validation
+
+A subscription lease, when present, MUST occur once and be a positive base-10
+integer that can be represented as a Go `time.Duration` in seconds. The original
+string is retained.
+
+An omitted lease uses `DefaultLease`. A requested lease above `MaxLease` is
+clamped. `EffectiveLeaseSeconds` is the selected duration expressed as base-10
+whole seconds.
+
+A secret MAY be omitted. If present, it MUST occur once, MUST be non-empty, and
+MUST contain fewer than 200 bytes. The framework does not generate, assess, or
+rotate secrets.
+
+### 7.6 Header safety
+
+Application-supplied headers MUST have valid names and MUST NOT contain carriage
+return or line feed characters in values. These hop-by-hop fields are forbidden:
+
+- `Connection`;
+- `Keep-Alive`;
+- `Proxy-Authenticate`;
+- `Proxy-Authorization`;
+- `TE`;
+- `Trailer`;
+- `Transfer-Encoding`;
+- `Upgrade`.
+
+Each operation additionally reserves headers it owns. Delivery reserves
+`Content-Length`, `Content-Type`, `Host`, `Link`, and `X-Hub-Signature`.
+Publisher content reserves `Content-Length`, `Content-Type`, `Host`, and
+`X-Go-Publisher`. Result mapping reserves `Content-Length` and
+`Transfer-Encoding` and reserves `Content-Type` when `Result.ContentType` is
+set.
+
+Validation MUST finish before mutating destination headers.
+
+### 7.7 Detached mutable data
+
+The framework MUST clone:
+
+- inbound and outbound `http.Header` maps;
+- `url.Values` maps and their value slices;
+- request, result, update, and response body slices;
+- messages before asynchronous queueing;
+- callback metadata before every handoff.
+
+Application mutation after a callback returns MUST NOT alter accepted work or
+subsequent wire requests.
+
+## 8. Handler request dispatch
+
+### 8.1 Common dispatch
+
+`Handler.ServeHTTP` executes this order:
+
+1. If the method is not POST, return 405 and `Allow: POST`.
+2. If admission is closed, return 503.
+3. Require and parse `Content-Type`.
+4. Reject more than one `X-Go-Publisher` field value.
+5. Normalize the single publisher header value by trimming space and converting
+   it to lowercase.
+6. Select the publisher event, publisher content, or form path.
+7. Bound and parse the body for the selected path.
+8. Dispatch the operation.
+
+Malformed input receives a bounded, generic response. Internal details and
+application errors MUST NOT be reflected by the ordinary WebSub paths.
+
+### 8.2 Form dispatch
+
+Without publisher content selection, the request body is parsed as
+`url.Values` and `hub.mode` selects:
+
+| Mode | Condition |
+|---|---|
+| `subscribe` | always available |
+| `unsubscribe` | always available |
+| `register` | publisher extension enabled |
+| `deregister` | publisher extension enabled |
+| `publish` | invalid unless selected as event or content publication |
+
+An unknown or invalid mode returns 400.
+
+### 8.3 Subscription parsing
+
+For `subscribe`:
+
+1. Require one topic and callback.
+2. Validate and normalize both URLs.
+3. Parse and validate the optional lease.
+4. Parse and validate the optional secret.
+5. Remove reserved fields from detached extra parameters.
+6. Construct `Subscription` using the configured public hub URL.
+
+For `unsubscribe`, use the same algorithm except that
+`hub.lease_seconds` is discarded without validation and is not retained.
+
+## 9. Subscription and unsubscription execution
+
+### 9.1 Admission algorithm
+
+For a parsed subscription or unsubscription:
+
+1. Snapshot request metadata.
+2. Create a `Controller` whose external-verification permission comes from
+   configuration.
+3. Invoke the optional admission callback synchronously.
+4. Map callback error or `Result`. If rejected or redirected, stop.
+5. Clone the message, metadata, and result.
+6. Construct an asynchronous job using `context.WithoutCancel` on the request
+   context.
+7. Attempt non-blocking admission to the bounded queue.
+8. If the handler is closed or the queue is full, return 503 and do not accept
+   the work.
+9. Write exactly 202 using the safe result headers and body.
+10. Release the queued job for worker execution only after the response is
+    committed.
+
+Step 10 is REQUIRED: validation and verification MUST NOT begin before the 202
+response has been committed.
+
+A `Result` status of zero or 202 accepts admission. A 4xx or 5xx status rejects
+with that status and schedules no work. Other 2xx statuses and all 3xx statuses
+inside `Result` are invalid and return 500.
+
+A `RedirectError` MAY request only 307 or 308 with an absolute HTTP(S) location
+without userinfo or fragment. A valid redirect schedules no work.
+
+### 9.2 External verification controller
+
+`Controller.MarkVerified` is available only during admission. When external
+verification is disabled it returns `ErrExternalVerificationDisabled`. The first
+enabled call succeeds; subsequent calls return `ErrAlreadyVerified`.
+
+A marked job skips the outbound challenge but still enters the bounded queue,
+runs asynchronous validation, computes verification timing metadata, and invokes
+the verified callback.
+
+Enabling this feature transfers challenge freshness, request binding, replay
+prevention, and audit responsibility to the application.
+
+### 9.3 Worker context
+
+A worker waits for the admission response gate, then derives a timeout context
+from the request context without its original cancellation. Therefore request
+context values survive after `ServeHTTP` returns, while the original request
+cancellation and deadline do not.
+
+The worker context ends at the earliest of:
+
+- `VerificationTimeout`;
+- handler shutdown cancellation;
+- completion of the job.
+
+### 9.4 Asynchronous validation
+
+The optional mode-specific validation callback runs before intent verification.
+A nil callback allows processing to continue.
+
+An unsubscription validation callback MAY enforce hub policy or inspect
+application state, but MUST NOT perform publisher validation.
+
+If validation returns `DeniedError`, the framework sends a best-effort GET to
+the exact callback with:
+
+- `hub.mode=denied`;
+- `hub.topic`;
+- optional sanitized `hub.reason`.
+
+Carriage return, line feed, and NUL are removed from reasons, and the result is
+bounded to 256 bytes.
+
+Any other validation error is logged without the error value. When
+`EnableHubErrorCallback` is true, the framework sends a best-effort
+`hub.mode=hub-error` callback with reason `validation failed`.
+
+A validation failure MUST NOT invoke a verified callback.
+
+### 9.5 Challenge generation
+
+Each non-externally-verified job creates a new challenge by:
+
+1. reading 32 bytes from `crypto/rand`;
+2. encoding them with unpadded URL-safe base64.
+
+The result is 43 ASCII characters. Challenge generation failure terminates the
+job and is logged without sensitive data.
+
+### 9.6 Intent-verification request
+
+The framework sends GET to the exact normalized callback. It appends encoded
+parameters to the existing `RawQuery`:
+
+| Mode | Parameters |
+|---|---|
+| subscribe | `hub.mode`, `hub.topic`, `hub.challenge`, `hub.lease_seconds` |
+| unsubscribe | `hub.mode`, `hub.topic`, `hub.challenge` |
+
+If `RawQuery` is non-empty, an ampersand is appended followed by the new encoded
+parameters. Existing reserved escapes, field order, duplicate keys, empty
+values, and overlapping `hub.*` keys are not parsed or overwritten.
+
+Redirects are refused. The response body is bounded by `MaxCallbackBody`.
+Verification succeeds only when the status is any 2xx and the complete body
+equals the challenge byte-for-byte. Every 3xx, 4xx, 5xx, network error,
+oversized body, or mismatch fails verification.
+
+A verification failure MUST NOT invoke the verified callback.
+
+### 9.7 Verified handoff
+
+After subscription verification:
+
+1. Select the requested lease or `DefaultLease`.
+2. Clamp it to `MaxLease`.
+3. Encode it as `EffectiveLeaseSeconds`.
+4. Record `LeaseStartedAt` immediately before challenge processing, or at the
+   equivalent point for externally verified work.
+5. Invoke `OnSubscriptionVerified` with detached values.
+
+After unsubscription verification, invoke `OnUnsubscriptionVerified` with a
+detached `VerifiedUnsubscription`.
+
+A verified callback error is logged without the error value. When
+`EnableHubErrorCallback` is true, the framework sends a best-effort
+`hub.mode=hub-error` callback with reason `verified callback failed`.
+
+The framework MUST NOT persist, renew, expire, or delete application state.
+Applications mutate state only from verified callbacks and MUST leave prior
+state unchanged after failed renewal verification.
+
+### 9.8 Status callbacks
+
+Denied and hub-error status callbacks:
+
+- use GET and the exact callback query-preservation algorithm;
+- refuse redirects;
+- bound and close the response body;
+- do not require a particular response status or body;
+- are best effort, and their errors do not re-enter application callbacks.
+
+`hub-error` is a project-specific compatibility extension.
+
+## 10. Result and error mapping
+
+### 10.1 Result validation
+
+A non-zero `Result.StatusCode` MUST be between 200 and 599. Headers and content
+type are validated before writing.
+
+When `Body` is nil or zero-length, the operation default body is used. A
+non-empty body replaces the default body.
+
+When a body exists and no content type is selected, the default content type is
+`application/x-www-form-urlencoded`.
+
+### 10.2 Operation defaults
+
+| Operation | Default status | Default body |
+|---|---:|---|
+| subscribe admission | 202 | none |
+| unsubscribe admission | 202 | none |
+| register | 200 | `hub.mode=accepted` |
+| deregister | 200 | `hub.mode=accepted` |
+| event update | 202 | `hub.mode=accepted` |
+| content update | 202 | `hub.mode=accepted` |
+
+### 10.3 Admission errors
+
+- malformed input returns 400;
+- unsupported methods return 405 with `Allow: POST`;
+- closed admission or exhausted verification capacity returns 503;
+- `ErrDenied` from an admission callback returns 400;
+- an unexpected admission callback error returns 500;
+- an invalid callback `Result` returns 500.
+
+Ordinary error responses use generic HTTP status text. Secrets and callback
+causes are not exposed.
+
+### 10.4 Callback panic containment
+
+A panic from any application callback is recovered and converted to the generic
+error `websubhub: application callback panicked`. The panic value and stack are
+not exposed. It then follows the error mapping for that callback phase.
+
+## 11. Single-subscriber content delivery
+
+### 11.1 Construction
+
+`NewDeliveryClient` snapshots one `Subscription` and transport configuration.
+It validates:
+
+- hub, topic, and callback as absolute HTTP(S) URLs;
+- hub and callback without userinfo or fragments;
+- secret length below 200 bytes;
+- non-negative timeout and response limit.
+
+The subscription snapshot defines the callback target, HMAC key, and current
+Link metadata for every delivery by that client.
+
+### 11.2 Delivery algorithm
+
+`Deliver(ctx, content)` performs exactly one attempt:
+
+1. Reject a nil client.
+2. Validate the complete `ContentType`.
+3. Validate custom headers and reserved fields.
+4. Clone the body.
+5. create POST to the exact callback URL;
+6. copy safe custom headers;
+7. set the complete `Content-Type`;
+8. add separate `Link` values for the subscription hub (`rel=hub`) and topic
+   (`rel=self`);
+9. if the secret is non-empty, compute HMAC-SHA256 over the exact cloned body and
+   set `X-Hub-Signature: sha256=<lowercase-hex>`;
+10. execute with redirect refusal and context propagation;
+11. read, bound, snapshot, and close the response;
+12. classify the result.
+
+`HeaderHubSignature` is the exported name for `X-Hub-Signature`.
+
+The framework MUST NOT add a delivery identifier or other project-specific
+delivery header. It MUST NOT retry.
+
+### 11.3 Delivery result
+
+Every 2xx response succeeds and returns a detached `DeliveryResponse`.
+
+HTTP 410 returns `HTTPError` matching both `ErrDeliveryFailed` and
+`ErrSubscriptionGone`. Other non-2xx responses, network errors, redirects, and
+oversized bodies match `ErrDeliveryFailed`.
+
+The bounded subscriber response body is exposed only for diagnostics and has no
+WebSub protocol meaning.
+
+### 11.4 Delivery ownership boundary
+
+The application selects the body and content type and is responsible for their
+completeness and correctness. It owns subscriber enumeration, concurrency,
+ordering, retry budgets, acknowledgement, deduplication, dead-letter handling,
+and the decision to stop after HTTP 410.
+
+The current API derives `rel=self` and `rel=hub` from the subscription snapshot,
+not from content-specific metadata. This behavior is normative for this edition
+and prevents the package alone from claiming complete hub conformance.
+
+## 12. Publisher extension and discovery
+
+### 12.1 Isolation
+
+The publisher extension is disabled by default. When disabled, register,
+deregister, event, and content publication requests are rejected and extension
+callbacks are not required.
+
+Extension behavior MUST remain isolated from subscription and unsubscription
+dispatch. `HeaderGoPublisher` is the exported name for `X-Go-Publisher`.
+
+### 12.2 Inbound extension operations
+
+| Operation | Wire form | Callback | Default response |
+|---|---|---|---|
+| register | form body: `hub.mode=register` and `hub.topic` | `OnRegisterTopic` | 200 accepted |
+| deregister | form body: `hub.mode=deregister` and `hub.topic` | `OnDeregisterTopic` | 200 accepted |
+| event | form body: `hub.mode=publish` and `hub.topic`; `X-Go-Publisher: event` | `OnUpdateMessage` with `UpdateEvent` | 202 accepted |
+| content | query: `hub.mode=publish` and `hub.topic`; arbitrary content body | `OnUpdateMessage` with `UpdateContent` | 202 accepted |
+
+Content publication accepts an absent publisher header or
+`X-Go-Publisher: publish`. `PublisherClient.Publish` sends the explicit header.
+A form-encoded `hub.mode=publish` without the event selector is rejected.
+
+More than one `X-Go-Publisher` value is invalid. Header matching is
+case-insensitive after trimming surrounding space.
+
+A successful extension callback result is validated and written. A callback
+error produces 400 with form fields `hub.mode=denied` and a sanitized
+`hub.reason`. A `DeniedError` may supply the reason; other errors use
+`operation denied`.
+
+### 12.3 Publisher client
+
+`PublisherClient` provides:
+
+- `RegisterTopic`;
+- `DeregisterTopic`;
+- `Notify` for event-only publication;
+- `Publish` for exact content.
+
+Every request uses POST and propagates its context. Register, deregister, and
+notify use form bodies. Publish preserves the exact body and complete content
+type, appends `hub.mode` and `hub.topic` to any existing hub query, and sends
+`X-Go-Publisher: publish`.
+
+A publisher response succeeds only when its status is 2xx and its bounded form
+body contains exactly one `hub.mode=accepted`. Every other response returns an
+`HTTPError` matching `ErrPublisherFailed`. Redirects are refused.
+
+### 12.4 Discovery Link helper
+
+`AddDiscoveryLinks(header, self, hubs...)`:
+
+1. requires a non-nil header map;
+2. validates self as an absolute HTTP(S) topic URL;
+3. requires at least one hub;
+4. validates every hub as absolute HTTP(S) without userinfo or fragment;
+5. completes all validation before mutation;
+6. appends one `Link: <self>; rel="self"` value;
+7. appends one `Link: <hub>; rel="hub"` value per hub;
+8. preserves all existing header values.
+
+The helper does not parse existing Link fields or prevent a pre-existing
+`rel=self` from producing multiple self relations.
+
+The extension is excluded from WebSub conformance because WebSub leaves the
+publisher-to-hub notification mechanism unspecified.
+
+## 13. Concurrency and lifecycle
+
+### 13.1 Concurrency safety
+
+`Handler`, `DeliveryClient`, and `PublisherClient` are safe for concurrent use
+after construction. Application callbacks may run concurrently and are
+responsible for their own shared state.
+
+The framework MUST NOT create an unbounded goroutine, queue, response read, or
+retry loop.
+
+### 13.2 Admission accounting
+
+Queue admission and handler closure are serialized. Each accepted job increments
+the outstanding-work count exactly once. Queue rejection decrements it before
+returning 503. Each processed or shutdown-drained job decrements it exactly once.
+
+A worker MUST NOT execute a job before its 202 response gate opens.
+
+### 13.3 Close algorithm
+
+`Handler.Close(ctx)` is idempotent:
+
+1. Mark admission closed exactly once.
+2. Start waiting for all admitted jobs.
+3. When all jobs finish, cancel worker context.
+4. Wait for every worker to exit.
+5. Signal completion to all callers.
+
+If `ctx` ends first:
+
+1. cancel remaining worker contexts;
+2. drain queued jobs and balance their accounting;
+3. return `ctx.Err()`.
+
+A later `Close` call MAY wait for final completion and return nil. Requests
+arriving after closure receive 503. The handler does not close caller-owned HTTP
+clients, servers, brokers, stores, or application workers.
+
+## 14. Security requirements and boundary
+
+### 14.1 Transport and destination policy
+
+The framework accepts HTTP and HTTPS because WebSub permits both. It does not
+upgrade HTTP, configure server TLS, pin certificates, configure mutual TLS, or
+detect downgrade.
+
+Absolute URL validation is not an SSRF defense. Callback verification and
+delivery can reach any address permitted by the injected transport, including
+loopback, private, link-local, metadata-service, proxy-selected, or
+DNS-rebound destinations. Production applications MUST enforce destination
+policy at dial time using an appropriate `http.Transport` or network boundary.
+
+The configured `HubURL` is authoritative. The framework MUST NOT derive it from
+`Host`, `Forwarded`, or `X-Forwarded-*` headers.
+
+### 14.2 Authentication and authorization
+
+Inbound authentication and authorization belong in ordinary `net/http`
+middleware. Topic registration, subscription admission, publisher access, and
+tenant policy belong to application callbacks.
+
+The framework copies inbound headers into `RequestMetadata` but does not
+interpret `Authorization`. Applications MUST treat metadata as sensitive.
+
+### 14.3 Secrets and privacy
+
+The framework MUST NOT log:
+
+- `hub.secret`;
+- authorization values;
+- callback capability queries;
+- request or response payload bodies;
+- application callback errors or panic values.
+
+Topic and callback URLs may identify users or tenants. A callback query may be a
+bearer capability and MUST be protected by application storage, logging, and
+access policy.
+
+HMAC covers only delivery body bytes. It does not authenticate Link,
+`Content-Type`, or custom headers. Applications requiring header integrity or
+confidentiality MUST use authenticated TLS or separate protection.
+
+### 14.4 Resource safety
+
+The framework provides finite body limits, verification timeout, worker count,
+and queue capacity. These are not a complete denial-of-service defense.
+Authentication, per-principal quotas, connection limits, distributed admission,
+rate limiting, and abuse detection remain application responsibilities.
+
+### 14.5 Redirects and client ownership
+
+All framework-created outbound clients refuse redirects. A valid 307 or 308 from
+an admission callback is an inbound response decision and does not weaken
+outbound redirect refusal.
+
+A caller-supplied `http.Client` value is copied and never mutated or closed.
+Its transport may still implement application-specific proxy, DNS, TLS, and
+destination behavior.
+
+### 14.6 External verification
+
+`AllowExternalVerification` is a trust-boundary switch and is disabled by
+default. An application enabling it MUST provide intent authenticity equivalent
+to the framework challenge flow and own freshness, binding, replay prevention,
+and audit.
+
+## 15. WebSub conformance boundary
+
+### 15.1 Framework-provided hub mechanics
+
+The framework implements:
+
+- subscription and unsubscription form parsing;
+- exact 202 admission before asynchronous validation and verification;
+- application denial and supported 307/308 admission redirects;
+- random single-use challenge generation;
+- exact challenge echo verification;
+- positive finite effective lease selection;
+- unreserved URL-character normalization;
+- callback query preservation;
+- one-attempt HMAC-SHA256 delivery;
+- exact callback, body, and complete content type transmission;
+- subscription-derived hub and self Link metadata.
+
+### 15.2 Required application mechanics
+
+A complete hub application must additionally provide:
+
+- canonical topic policy;
+- storage of verified subscriptions only;
+- atomic renewal and unsubscription replacement;
+- mandatory lease expiry and removal;
+- selection of the complete current representation and matching content type;
+- content-specific discovery metadata where it differs from subscription
+  metadata;
+- subscriber enumeration and fan-out;
+- bounded retry and continued attempts for active subscriptions;
+- authorization and operational controls.
+
+These responsibilities are deliberately outside the core framework and do not
+authorize the framework to claim standalone W3C hub conformance.
+
+### 15.3 Subscriber scope
+
+The module does not implement a subscriber discovery client, subscription
+request client, pending-intent store, verification callback server, renewal
+scheduler, delivery receiver, or signature validator. It MUST NOT claim
+subscriber conformance.
+
+### 15.4 Project extensions
+
+Register, deregister, publish, event, external verification, and `hub-error`
+behavior are project-specific extensions. They MUST remain distinguishable from
+the standardized subscription, unsubscription, verification, and delivery
+paths.
+
+## Appendix A. Implementation conformance checklist
+
+A change to the framework is conforming only when applicable items below remain
+true.
+
+### A.1 Construction and type safety
+
+- required callback combinations are rejected at construction;
+- zero configuration selects finite defaults;
+- invalid negative or fractional lease configuration is rejected;
+- supplied clients and mutable values are not aliased or mutated;
+- the core module remains standard-library-only.
+
+### A.2 Handler wire behavior
+
+- unsupported methods return literal 405 and `Allow: POST`;
+- malformed input returns bounded generic errors;
+- subscription and unsubscription acceptance is literal 202;
+- validation and verification begin only after acceptance;
+- queue saturation and closure return 503 without accepted work;
+- redirect results permit only literal 307 and 308;
+- form fields, URL bytes, content types, and callback queries follow Sections 7
+  through 9.
+
+### A.3 Verification and lifecycle
+
+- challenges come from `crypto/rand` and match exactly;
+- redirects, non-2xx responses, oversized bodies, and mismatches fail;
+- verified callbacks run only after successful or explicitly external
+  verification;
+- cancellation and shutdown account for accepted work exactly once;
+- concurrency tests use channels, contexts, and bounded deadlines rather than
+  timing assumptions.
+
+### A.4 Delivery and publisher clients
+
+- wire tests assert literal methods, URLs, queries, headers, media types, and
+  body bytes;
+- HMAC vectors cover the exact transmitted body;
+- callback and publisher response bodies are bounded and closed;
+- every outbound client refuses redirects;
+- delivery remains one attempt and publisher acceptance requires both 2xx and
+  `hub.mode=accepted`.
+
+### A.5 Security and errors
+
+- secrets, credentials, callback capability queries, and payloads do not appear
+  in framework logs or framework-generated error strings; transport errors are
+  treated as sensitive;
+- unsafe, reserved, and response-splitting headers are rejected;
+- URL syntax validation is not described as SSRF protection;
+- enabled and disabled extension and external-verification configurations are
+  tested;
+- typed failures preserve `errors.Is` and `errors.As` behavior.
+
+## Appendix B. References
+
+- [W3C WebSub Recommendation](https://www.w3.org/TR/websub/)
+- [RFC 2119: Key words for use in RFCs](https://www.rfc-editor.org/rfc/rfc2119)
+- [RFC 8174: Ambiguity of Uppercase vs Lowercase](https://www.rfc-editor.org/rfc/rfc8174)
+- [Go `net/http` package](https://pkg.go.dev/net/http)
+- [Go memory model](https://go.dev/ref/mem)

@@ -21,8 +21,8 @@ Before changing code, read the documents relevant to the task:
 
 1. `README.md` for the public project overview and basic usage.
 2. `CONTRIBUTING.md` for validation, coverage, change, and release workflows.
-3. `docs/spec.md` for the normative API, protocol behavior, ownership boundary,
-   security limitations, and W3C conformance and ownership analysis.
+3. `docs/spec.md` for the normative implementation architecture, algorithms,
+   protocol behavior, security boundary, and conformance requirements.
 4. `SECURITY.md` and specification Section 14 for security-sensitive work.
 5. The README and tests of each affected example module.
 
@@ -54,7 +54,7 @@ them.
 - `examples/kafka-websubhub/`: runnable Kafka-backed hub in an independent Go
   module, using an application-owned state log, per-topic content logs, and
   per-subscription consumers.
-- `docs/spec.md`: normative framework contract and conformance analysis.
+- `docs/spec.md`: maintainer-facing implementation and conformance contract.
 - `.github/workflows/`: pull-request validation, release preparation, and
   manually approved publication automation.
 
