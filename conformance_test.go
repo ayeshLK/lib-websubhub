@@ -98,8 +98,10 @@ func TestUnsubscriptionRedirects(t *testing.T) {
 	}
 }
 
-func TestVerificationPreservesRawCallbackQuery(t *testing.T) {
-	const originalQuery = "z=a%20b&x=1&x=2&empty=&hub.mode=original"
+func TestVerificationNormalizesUnreservedAndPreservesRawCallbackQuery(t *testing.T) {
+	const originalQuery = "z=a%20b&name=%7ealice&slash=%2f&x=1&x=2&empty=&hub.mode=original"
+	const normalizedQuery = "z=a%20b&name=~alice&slash=%2f&x=1&x=2&empty=&hub.mode=original"
+	const topic = "https://topic.example/%7Ealice?letter=%41&slash=%2F"
 	requestURI := make(chan string, 1)
 	subscriber := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestURI <- r.RequestURI
@@ -112,10 +114,10 @@ func TestVerificationPreservesRawCallbackQuery(t *testing.T) {
 	}))
 	defer subscriber.Close()
 
-	verified := make(chan struct{}, 1)
+	verified := make(chan VerifiedSubscription, 1)
 	service := minimumService()
-	service.OnSubscriptionVerified = func(context.Context, VerifiedSubscription, RequestMetadata) error {
-		verified <- struct{}{}
+	service.OnSubscriptionVerified = func(_ context.Context, message VerifiedSubscription, _ RequestMetadata) error {
+		verified <- message
 		return nil
 	}
 	handler, err := NewHandler(Config{HubURL: "https://hub.example"}, service)
@@ -124,15 +126,15 @@ func TestVerificationPreservesRawCallbackQuery(t *testing.T) {
 	}
 	defer func() { _ = handler.Close(context.Background()) }()
 	response := postForm(handler, url.Values{
-		"hub.mode": {"subscribe"}, "hub.topic": {"https://topic.example"},
-		"hub.callback": {subscriber.URL + "/callback?" + originalQuery},
+		"hub.mode": {"subscribe"}, "hub.topic": {topic},
+		"hub.callback": {subscriber.URL + "/%7eclient?" + originalQuery},
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status = %d", response.Code)
 	}
 	select {
 	case raw := <-requestURI:
-		wantPrefix := "/callback?" + originalQuery + "&"
+		wantPrefix := "/~client?" + normalizedQuery + "&"
 		if !strings.HasPrefix(raw, wantPrefix) {
 			t.Fatalf("raw callback query changed: %q", raw)
 		}
@@ -143,7 +145,12 @@ func TestVerificationPreservesRawCallbackQuery(t *testing.T) {
 		t.Fatal("verification request missing")
 	}
 	select {
-	case <-verified:
+	case message := <-verified:
+		if message.Topic != "https://topic.example/~alice?letter=A&slash=%2F" ||
+			message.Callback != subscriber.URL+"/~client?"+normalizedQuery {
+			t.Fatalf("normalized subscription URLs = topic %q, callback %q",
+				message.Topic, message.Callback)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("verified callback missing")
 	}
@@ -178,15 +185,19 @@ func TestProtocolStringFieldsAndIgnoredUnsubscriptionLease(t *testing.T) {
 	defer func() { _ = handler.Close(context.Background()) }()
 
 	subscribe := postForm(handler, url.Values{
-		"hub.mode": {"subscribe"}, "hub.topic": {"https://topic.example"},
-		"hub.callback": {"https://callback.example"}, "hub.lease_seconds": {"30"},
-		"hub.secret": {"shared-secret"},
+		"hub.mode":          {"subscribe"},
+		"hub.topic":         {"https://topic.example/%7ealice?letter=%41&slash=%2F"},
+		"hub.callback":      {"https://callback.example/%7Eclient?token=%61%26%2f"},
+		"hub.lease_seconds": {"30"},
+		"hub.secret":        {"shared-secret"},
 	})
 	if subscribe.Code != http.StatusAccepted {
 		t.Fatalf("subscribe status = %d", subscribe.Code)
 	}
 	message := <-subscriptionSeen
 	if message.Hub != "https://hub.example" || message.Mode != ModeSubscribe ||
+		message.Topic != "https://topic.example/~alice?letter=A&slash=%2F" ||
+		message.Callback != "https://callback.example/~client?token=a%26%2f" ||
 		message.LeaseSeconds != "30" || message.Secret != "shared-secret" {
 		t.Fatalf("subscription fields = %+v", message)
 	}
@@ -196,14 +207,18 @@ func TestProtocolStringFieldsAndIgnoredUnsubscriptionLease(t *testing.T) {
 	}
 
 	unsubscribe := postForm(handler, url.Values{
-		"hub.mode": {"unsubscribe"}, "hub.topic": {"https://topic.example"},
-		"hub.callback": {"https://callback.example"}, "hub.lease_seconds": {"not-a-number"},
+		"hub.mode":          {"unsubscribe"},
+		"hub.topic":         {"https://topic.example/%7Ealice?letter=%41&slash=%2F"},
+		"hub.callback":      {"https://callback.example/%7eclient?token=%61%26%2f"},
+		"hub.lease_seconds": {"not-a-number"},
 	})
 	if unsubscribe.Code != http.StatusAccepted {
 		t.Fatalf("unsubscribe status = %d", unsubscribe.Code)
 	}
 	unsubscription := <-unsubscriptionSeen
-	if unsubscription.Mode != ModeUnsubscribe || unsubscription.Parameters.Has("hub.lease_seconds") {
+	if unsubscription.Mode != ModeUnsubscribe ||
+		unsubscription.Topic != "https://topic.example/~alice?letter=A&slash=%2F" ||
+		unsubscription.Callback != "https://callback.example/~client?token=a%26%2f" || unsubscription.Parameters.Has("hub.lease_seconds") {
 		t.Fatalf("unsubscription fields = %+v", unsubscription)
 	}
 

@@ -20,7 +20,8 @@
 // asynchronous validation, subscriber intent verification, response mapping,
 // and lifecycle management. Handler implements [net/http.Handler], so routing,
 // middleware, authentication, TLS, and server shutdown remain ordinary
-// [net/http] concerns.
+// [net/http] concerns. Inbound topic and callback URLs have percent-encoded
+// unreserved characters decoded before application callbacks run.
 //
 // # Application ownership
 //

@@ -28,6 +28,9 @@ All notable changes to this project will be documented here. The project uses
   pull request with the built-in GitHub Actions token.
 - Prepare v0.5.0 as the first automated release instead of accepting Release
   Please's default initial version of v1.0.0.
+- Decode percent-encoded unreserved characters in inbound topic and callback
+  URLs so equivalent WebSub subscription identities reach application callbacks
+  and verification consistently.
 
 ### Removed
 

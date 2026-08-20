@@ -108,7 +108,8 @@ type Result struct {
 type TopicRegistration struct {
 	// Mode is ModeRegister.
 	Mode Mode
-	// Topic is the absolute HTTP(S) topic URL.
+	// Topic is the absolute HTTP(S) topic URL after percent-encoded unreserved
+	// characters are decoded.
 	Topic string
 }
 
@@ -116,7 +117,8 @@ type TopicRegistration struct {
 type TopicDeregistration struct {
 	// Mode is ModeDeregister.
 	Mode Mode
-	// Topic is the absolute HTTP(S) topic URL.
+	// Topic is the absolute HTTP(S) topic URL after percent-encoded unreserved
+	// characters are decoded.
 	Topic string
 }
 
@@ -127,9 +129,11 @@ type Subscription struct {
 	Hub string
 	// Mode is ModeSubscribe.
 	Mode Mode
-	// Callback is the absolute HTTP(S) subscriber callback URL.
+	// Callback is the absolute HTTP(S) subscriber callback URL after
+	// percent-encoded unreserved characters are decoded.
 	Callback string
-	// Topic is the absolute HTTP(S) topic URL.
+	// Topic is the absolute HTTP(S) topic URL after percent-encoded unreserved
+	// characters are decoded.
 	Topic string
 	// LeaseSeconds is the optional hub.lease_seconds form value.
 	LeaseSeconds string
@@ -152,9 +156,11 @@ type VerifiedSubscription struct {
 type Unsubscription struct {
 	// Mode is ModeUnsubscribe.
 	Mode Mode
-	// Callback is the absolute HTTP(S) subscriber callback URL.
+	// Callback is the absolute HTTP(S) subscriber callback URL after
+	// percent-encoded unreserved characters are decoded.
 	Callback string
-	// Topic is the absolute HTTP(S) topic URL.
+	// Topic is the absolute HTTP(S) topic URL after percent-encoded unreserved
+	// characters are decoded.
 	Topic string
 	// Secret is the optional hub.secret form value and must remain confidential.
 	Secret string
@@ -173,7 +179,8 @@ type VerifiedUnsubscription struct {
 type UpdateMessage struct {
 	// Kind distinguishes exact content from an event-only notification.
 	Kind UpdateKind
-	// Topic is the absolute HTTP(S) topic URL.
+	// Topic is the absolute HTTP(S) topic URL after percent-encoded unreserved
+	// characters are decoded for inbound publisher messages.
 	Topic string
 	// ContentType is the complete publisher media type for UpdateContent.
 	ContentType string

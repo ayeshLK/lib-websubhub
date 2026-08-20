@@ -104,7 +104,7 @@ inputs. Every fixed parser or security regression becomes a seed.
 | Media type | form type; parameters; UTF-8; missing/malformed/unsupported values |
 | Form input | missing, empty, duplicate, unknown, malformed escaping, oversized |
 | Modes | subscribe/unsubscribe; extension enabled/disabled; invalid |
-| URLs | HTTP/HTTPS; relative; scheme; userinfo; fragment; overlapping callback query keys |
+| URLs | HTTP/HTTPS; relative; scheme; userinfo; fragment; unreserved percent-decoding; reserved-escape and overlapping callback-query preservation |
 | Lease | omitted/default; positive; zero; negative; non-decimal; overflow; cap |
 | Secret | omitted; 199 bytes; 200 rejected; cloning; never logged |
 | Dispatch | correct callback and typed message; nil optional callback; required callback validation |
