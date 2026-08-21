@@ -14,6 +14,7 @@
 
 ### Bug Fixes
 
+* accept Release Please's generated changelog heading during publication
 * complete empty Kafka event replay ([9fec070](https://github.com/ayeshLK/lib-websubhub/commit/9fec0705603c0596d58aa13187ba5aad0c401101))
 * keep initial release pre-v1 ([bdb75b4](https://github.com/ayeshLK/lib-websubhub/commit/bdb75b4135936bee1f465b74b45d2fd481d96589))
 * normalize WebSub URL percent encoding ([434593d](https://github.com/ayeshLK/lib-websubhub/commit/434593d66c55cc6007679d18f4d0afe448502296))
