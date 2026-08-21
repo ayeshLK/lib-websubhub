@@ -35,21 +35,41 @@ Keep documentation self-contained. Do not add historical migration baselines or
 references to unrelated implementations unless the user explicitly requests
 them.
 
+## Specification maintenance
+
+`docs/spec.md` is a maintainer-facing Main Branch Edition, not an application
+developer guide. It must describe the framework behavior implemented in the
+same revision: architecture, public data model, validation, execution
+algorithms, lifecycle, security boundary, and conformance limits. Put package
+adoption and usage guidance in `README.md`, Go doc comments, and runnable
+examples instead.
+
+Use RFC 2119/8174 normative terms deliberately. Internal algorithms may be
+reorganized only when observable HTTP behavior, callback order, error
+classification, concurrency, and lifecycle remain equivalent. Keep proposals,
+roadmaps, and unresolved improvements in GitHub issues; do not make future work
+part of the normative contract. When the WebSub baseline changes, verify the
+new Recommendation and update the specification, implementation, tests, and
+public claims together.
+
 ## Repository map
 
 - `CONTRIBUTING.md`: human contributor validation and release workflow.
+- `doc.go`: package overview and public ownership boundary.
 - `handler.go`: inbound HTTP parsing, dispatch, verification queue, and handler
   lifecycle.
 - `service.go`: application callbacks, modes, metadata, and result types.
-- `subscription.go`: subscription and unsubscription protocol types.
-- `challenge.go`: intent-verification callback construction and execution.
+- `subscription.go`: asynchronous validation, intent verification, verified
+  handoff, and status callbacks.
+- `challenge.go`: cryptographically secure verification challenge generation.
 - `delivery.go`: one-attempt content delivery to one subscriber.
 - `publisher.go`: optional publisher-to-hub extension client.
 - `discovery.go`: WebSub discovery Link-header helpers.
 - `errors.go`: sentinel and typed errors.
 - `helpers.go`: shared validation, cloning, body, URL, and HTTP helpers.
 - `*_test.go`: unit, wire-level, lifecycle, security-boundary, and conformance
-  tests for the root module.
+  tests for the root module; `conformance_test.go` is the executable WebSub
+  behavior matrix.
 - `examples/in-memory-websubhub/`: runnable hub in an independent Go module.
 - `examples/kafka-websubhub/`: runnable Kafka-backed hub in an independent Go
   module, using an application-owned state log, per-topic content logs, and
