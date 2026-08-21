@@ -23,8 +23,8 @@ release lines explicitly.
 This package is a protocol layer, not a complete hardened service. Applications
 must provide TLS, authentication, authorization, rate limiting, durable state,
 callback and topic SSRF controls, trusted proxy handling, operational limits,
-and secret-safe logging. See `docs/spec.md` for the full supported/unsupported
-security matrix.
+and secret-safe logging. Framework maintainers must keep these boundaries aligned
+with Sections 14 and 15 of `docs/spec.md`.
 
 The handler decodes percent-encoded URL unreserved characters before invoking
 application callbacks. Apply authorization and destination policy to those

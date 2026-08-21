@@ -190,14 +190,12 @@ inbound requests, configure TLS, protect persisted secrets, rate-limit clients,
 and enforce lease expiry. Outbound clients refuse redirects and do not mutate
 caller-supplied `http.Client` values.
 
-Read the [security policy](SECURITY.md) and
-[normative framework specification](docs/spec.md) before exposing a hub to
-untrusted networks. The specification documents the W3C conformance and
-ownership boundaries and the optional publisher extension.
+Read the [security policy](SECURITY.md) before exposing a hub to untrusted
+networks.
 
 ## Documentation
 
-- [Framework specification](docs/spec.md)
+- [Framework implementation specification](docs/spec.md) — for maintainers
 - [Contributor guide](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 - [Go API reference](https://pkg.go.dev/github.com/ayeshLK/lib-websubhub)
