@@ -1,6 +1,7 @@
 # lib-websubhub
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ayeshLK/lib-websubhub.svg)](https://pkg.go.dev/github.com/ayeshLK/lib-websubhub)
+[![Release](https://img.shields.io/github/v/release/ayeshLK/lib-websubhub)](https://github.com/ayeshLK/lib-websubhub/releases/latest)
 [![CI](https://github.com/ayeshLK/lib-websubhub/actions/workflows/ci.yml/badge.svg)](https://github.com/ayeshLK/lib-websubhub/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/ayeshLK/lib-websubhub/branch/main/graph/badge.svg)](https://codecov.io/gh/ayeshLK/lib-websubhub)
 [![License](https://img.shields.io/github/license/ayeshLK/lib-websubhub)](LICENSE)
@@ -46,20 +47,38 @@ and does not impose a database, broker, scheduler, or authentication system.
 
 ## Install
 
-The module requires Go 1.25 or newer. While the API is pre-release, evaluate the
-current default branch with:
+The module requires Go 1.25 or newer. Install the current release explicitly so
+your build remains reproducible:
 
 ```sh
-go get github.com/ayeshLK/lib-websubhub@main
+go get github.com/ayeshLK/lib-websubhub@v0.5.0
 ```
 
-Import it as `websubhub`:
+The module is the root package and is imported as `websubhub`:
 
 ```go
 import websubhub "github.com/ayeshLK/lib-websubhub"
 ```
 
-Once versioned releases are available, pin the appropriate semantic version.
+Because `v0.5.0` is a pre-v1 release, review the changelog before upgrading to a
+new minor version.
+
+### Try the runnable hub
+
+The in-memory example is the quickest way to exercise subscription
+verification and content delivery locally:
+
+```sh
+git clone https://github.com/ayeshLK/lib-websubhub.git
+cd lib-websubhub
+git checkout v0.5.0
+cd examples/in-memory-websubhub
+go run .
+```
+
+The hub listens at `http://localhost:9090/hub`. Follow the example's
+[protocol walk-through](examples/in-memory-websubhub/README.md#manual-protocol-walk-through)
+to register a topic, subscribe a callback, publish content, and unsubscribe.
 
 ## Create a hub handler
 
@@ -102,7 +121,7 @@ if err != nil {
 }
 
 mux := http.NewServeMux()
-mux.Handle("/websub", authenticate(hub))
+mux.Handle("/websub", hub)
 server := &http.Server{
     Addr:              ":8443",
     Handler:           mux,
@@ -110,9 +129,10 @@ server := &http.Server{
 }
 ```
 
-Here, `authenticate`, persistence, server startup, and shutdown are
-application code. Call `hub.Close(ctx)` during shutdown to drain accepted
-verification work.
+Here, persistence, server startup, and shutdown are application code. Wrap
+`hub` with ordinary `net/http` authentication, authorization, logging, or
+metrics middleware as needed. Call `hub.Close(ctx)` during shutdown to drain
+accepted verification work.
 
 Successful subscription and unsubscription admission returns `202 Accepted`;
 validation and subscriber intent verification then run asynchronously. State
