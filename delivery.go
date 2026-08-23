@@ -19,8 +19,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
+	"hash"
 	"net/http"
 	"time"
 )
@@ -28,6 +30,19 @@ import (
 const (
 	// HeaderHubSignature contains the WebSub content signature.
 	HeaderHubSignature = "X-Hub-Signature"
+)
+
+// SignatureAlgorithm identifies an HMAC algorithm for authenticated content
+// distribution.
+type SignatureAlgorithm string
+
+const (
+	// SignatureSHA256 selects HMAC-SHA256 and is the default.
+	SignatureSHA256 SignatureAlgorithm = "sha256"
+	// SignatureSHA384 selects HMAC-SHA384.
+	SignatureSHA384 SignatureAlgorithm = "sha384"
+	// SignatureSHA512 selects HMAC-SHA512.
+	SignatureSHA512 SignatureAlgorithm = "sha512"
 )
 
 // DeliveryConfig controls outbound delivery transport. Zero values select
@@ -40,6 +55,9 @@ type DeliveryConfig struct {
 	Timeout time.Duration
 	// MaxResponseBody bounds the subscriber response body in bytes.
 	MaxResponseBody int64
+	// SignatureAlgorithm selects the HMAC algorithm used when the subscription
+	// has a secret. The zero value selects SignatureSHA256.
+	SignatureAlgorithm SignatureAlgorithm
 }
 
 // ContentDistribution is one exact payload sent to one subscriber.
@@ -64,9 +82,11 @@ type DeliveryResponse struct {
 
 // DeliveryClient sends content to a single immutable subscription.
 type DeliveryClient struct {
-	subscription Subscription
-	client       *http.Client
-	maxBody      int64
+	subscription       Subscription
+	client             *http.Client
+	maxBody            int64
+	signatureAlgorithm SignatureAlgorithm
+	signatureHash      func() hash.Hash
 }
 
 // NewDeliveryClient validates and snapshots a subscription and its transport.
@@ -87,6 +107,10 @@ func NewDeliveryClient(subscription Subscription, config DeliveryConfig) (*Deliv
 	if config.Timeout < 0 || config.MaxResponseBody < 0 {
 		return nil, invalidRequest("delivery configuration values must not be negative")
 	}
+	algorithm, newHash, err := deliverySignature(config.SignatureAlgorithm)
+	if err != nil {
+		return nil, err
+	}
 	if config.Timeout == 0 {
 		config.Timeout = defaultClientTimeout
 	}
@@ -94,10 +118,25 @@ func NewDeliveryClient(subscription Subscription, config DeliveryConfig) (*Deliv
 		config.MaxResponseBody = defaultDeliveryBody
 	}
 	return &DeliveryClient{
-		subscription: subscription,
-		client:       newHTTPClient(config.HTTPClient, config.Timeout),
-		maxBody:      config.MaxResponseBody,
+		subscription:       subscription,
+		client:             newHTTPClient(config.HTTPClient, config.Timeout),
+		maxBody:            config.MaxResponseBody,
+		signatureAlgorithm: algorithm,
+		signatureHash:      newHash,
 	}, nil
+}
+
+func deliverySignature(algorithm SignatureAlgorithm) (SignatureAlgorithm, func() hash.Hash, error) {
+	switch algorithm {
+	case "", SignatureSHA256:
+		return SignatureSHA256, sha256.New, nil
+	case SignatureSHA384:
+		return SignatureSHA384, sha512.New384, nil
+	case SignatureSHA512:
+		return SignatureSHA512, sha512.New, nil
+	default:
+		return "", nil, invalidRequest("unsupported delivery signature algorithm")
+	}
 }
 
 // Deliver performs exactly one HTTP delivery attempt. It returns a
@@ -130,9 +169,9 @@ func (c *DeliveryClient) Deliver(ctx context.Context, content ContentDistributio
 	request.Header.Add("Link", encodedLink(c.subscription.Hub, "hub"))
 	request.Header.Add("Link", encodedLink(c.subscription.Topic, "self"))
 	if c.subscription.Secret != "" {
-		mac := hmac.New(sha256.New, []byte(c.subscription.Secret))
+		mac := hmac.New(c.signatureHash, []byte(c.subscription.Secret))
 		_, _ = mac.Write(body)
-		request.Header.Set(HeaderHubSignature, "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		request.Header.Set(HeaderHubSignature, string(c.signatureAlgorithm)+"="+hex.EncodeToString(mac.Sum(nil)))
 	}
 	response, err := c.client.Do(request)
 	if err != nil {

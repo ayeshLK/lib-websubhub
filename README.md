@@ -175,6 +175,11 @@ subscription has a secret, the client adds `X-Hub-Signature`. Redirects are
 refused, responses are bounded, and HTTP `410 Gone` matches
 `ErrSubscriptionGone`.
 
+HMAC-SHA256 is the default signature algorithm. Set `SignatureAlgorithm` to
+`SignatureSHA384` or `SignatureSHA512` when the subscriber supports that
+algorithm. WebSub does not define algorithm negotiation, so applications must
+select a mutually supported algorithm for each subscription.
+
 ## Publisher extension and discovery
 
 Publisher-to-hub notification is not standardized by WebSub. The optional
