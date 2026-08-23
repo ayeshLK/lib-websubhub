@@ -67,6 +67,8 @@ All notable changes to this project will be documented here. The project uses
 
 ### Added
 
+- Configurable HMAC-SHA384 and HMAC-SHA512 content delivery signatures, while
+  preserving HMAC-SHA256 as the default.
 - Kafka-backed hub example with an eventually consistent `websub-events`
   projection, hashed content topics, one consumer group per subscription,
   JSON delivery, bounded retries, and application-owned stale-subscription

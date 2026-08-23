@@ -62,7 +62,8 @@ public claims together.
 - `subscription.go`: asynchronous validation, intent verification, verified
   handoff, and status callbacks.
 - `challenge.go`: cryptographically secure verification challenge generation.
-- `delivery.go`: one-attempt content delivery to one subscriber.
+- `delivery.go`: one-attempt content delivery and configurable WebSub HMAC
+  signatures for one subscriber.
 - `publisher.go`: optional publisher-to-hub extension client.
 - `discovery.go`: WebSub discovery Link-header helpers.
 - `errors.go`: sentinel and typed errors.
@@ -129,6 +130,10 @@ Preserve these behaviors unless the specification is deliberately revised:
   bounded. Queue saturation must not be reported as accepted work.
 - Content delivery preserves exact body bytes and the complete `Content-Type`,
   including parameters, and performs only one attempt.
+- Authenticated delivery emits exactly one `X-Hub-Signature`. HMAC-SHA256 is
+  the zero-value default; HMAC-SHA384 and HMAC-SHA512 are supported explicit
+  choices. Reject other algorithms, and do not infer negotiation from
+  non-standard subscription parameters.
 - `LeaseSeconds`, `EffectiveLeaseSeconds`, and `Secret` remain strings matching
   their form representation. Secrets must be fewer than 200 bytes and must not
   appear in logs or errors.

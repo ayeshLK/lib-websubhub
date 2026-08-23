@@ -358,8 +358,10 @@ Construction failure MUST NOT return a partially usable handler. The supplied
 
 ### 6.3 Delivery and publisher clients
 
-`DeliveryConfig` defaults to a 30-second timeout and a 64 KiB subscriber
-response limit. Negative values are invalid.
+`DeliveryConfig` defaults to a 30-second timeout, a 64 KiB subscriber response
+limit, and HMAC-SHA256 content signatures. It accepts `SignatureSHA256`,
+`SignatureSHA384`, and `SignatureSHA512`; any other signature algorithm is
+invalid. Negative values are invalid.
 
 `PublisherClientConfig.HubURL` is REQUIRED and rejects userinfo and fragments.
 Its response limit defaults to 64 KiB. The publisher client uses the same
@@ -735,13 +737,18 @@ Link metadata for every delivery by that client.
 7. set the complete `Content-Type`;
 8. add separate `Link` values for the subscription hub (`rel=hub`) and topic
    (`rel=self`);
-9. if the secret is non-empty, compute HMAC-SHA256 over the exact cloned body and
-   set `X-Hub-Signature: sha256=<lowercase-hex>`;
+9. if the secret is non-empty, compute HMAC using the configured signature
+   algorithm over the exact cloned body and set
+   `X-Hub-Signature: <algorithm>=<lowercase-hex>`;
 10. execute with redirect refusal and context propagation;
 11. read, bound, snapshot, and close the response;
 12. classify the result.
 
 `HeaderHubSignature` is the exported name for `X-Hub-Signature`.
+`SignatureAlgorithm` identifies the supported `sha256`, `sha384`, and `sha512`
+values. The zero value selects `sha256`. The framework emits exactly one
+signature and does not negotiate algorithms; the application MUST select an
+algorithm supported by the subscriber.
 
 The framework MUST NOT add a delivery identifier or other project-specific
 delivery header. It MUST NOT retry.
@@ -958,7 +965,7 @@ The framework implements:
 - positive finite effective lease selection;
 - unreserved URL-character normalization;
 - callback query preservation;
-- one-attempt HMAC-SHA256 delivery;
+- one-attempt HMAC-SHA256, HMAC-SHA384, or HMAC-SHA512 delivery;
 - exact callback, body, and complete content type transmission;
 - subscription-derived hub and self Link metadata.
 

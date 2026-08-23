@@ -18,8 +18,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
+	"hash"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +82,48 @@ func TestDeliveryClientWireAndResponse(t *testing.T) {
 	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	if received.Header.Get(HeaderHubSignature) != expected {
 		t.Fatalf("signature = %q, want %q", received.Header.Get(HeaderHubSignature), expected)
+	}
+}
+
+func TestDeliveryClientSignatureAlgorithms(t *testing.T) {
+	payload := []byte("signed payload")
+	secret := "shared-secret"
+	tests := []struct {
+		name      string
+		algorithm SignatureAlgorithm
+		prefix    string
+		newHash   func() hash.Hash
+	}{
+		{name: "sha384", algorithm: SignatureSHA384, prefix: "sha384=", newHash: sha512.New384},
+		{name: "sha512", algorithm: SignatureSHA512, prefix: "sha512=", newHash: sha512.New},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var signature string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				signature = r.Header.Get("X-Hub-Signature")
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client, err := NewDeliveryClient(Subscription{
+				Hub: server.URL, Topic: server.URL + "/topic", Callback: server.URL, Secret: secret,
+			}, DeliveryConfig{SignatureAlgorithm: test.algorithm})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = client.Deliver(context.Background(), ContentDistribution{
+				ContentType: "text/plain", Body: payload,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mac := hmac.New(test.newHash, []byte(secret))
+			_, _ = mac.Write(payload)
+			want := test.prefix + hex.EncodeToString(mac.Sum(nil))
+			if signature != want {
+				t.Fatalf("signature = %q, want %q", signature, want)
+			}
+		})
 	}
 }
 
@@ -158,6 +202,9 @@ func TestDeliveryValidation(t *testing.T) {
 	}
 	if _, err := NewDeliveryClient(valid, DeliveryConfig{Timeout: -1}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("negative timeout accepted: %v", err)
+	}
+	if _, err := NewDeliveryClient(valid, DeliveryConfig{SignatureAlgorithm: "md5"}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("unsupported signature algorithm accepted: %v", err)
 	}
 	var nilClient *DeliveryClient
 	if _, err := nilClient.Deliver(context.Background(), ContentDistribution{ContentType: "text/plain"}); !errors.Is(err, ErrInvalidRequest) {
