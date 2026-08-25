@@ -183,6 +183,21 @@ provide all three publisher callbacks to accept topic registration,
 deregistration, content publication, and event-only notification.
 `PublisherClient` invokes those operations using `X-Go-Publisher`.
 
+Topic registration may declare an expected complete media type while preserving
+existing calls that omit it:
+
+```go
+err := publisher.RegisterTopic(
+    ctx,
+    "https://publisher.example.com/topics/orders",
+    websubhub.WithTopicContentType("application/json; charset=utf-8"),
+)
+```
+
+The declaration reaches `OnRegisterTopic` as `TopicRegistration.ContentType`.
+Applications own its persistence and any mismatch policy; an actual published
+or fetched representation's valid media type remains authoritative.
+
 Use `AddDiscoveryLinks` to append standards-facing `rel=self` and `rel=hub`
 Link headers:
 

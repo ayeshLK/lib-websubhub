@@ -288,7 +288,7 @@ func TestPublisherClientAgainstHandler(t *testing.T) {
 	service.OnRegisterTopic = func(_ context.Context, request TopicRegistration, metadata RequestMetadata) (Result, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		registrations = append(registrations, "register:"+request.Topic)
+		registrations = append(registrations, "register:"+request.Topic+":"+request.ContentType)
 		if metadata.Header.Get("Authorization") != "Bearer publisher" {
 			t.Error("publisher metadata missing")
 		}
@@ -333,7 +333,7 @@ func TestPublisherClientAgainstHandler(t *testing.T) {
 		t.Fatalf("relative topic registration status = %d, want %d", invalidTopic.Code, http.StatusBadRequest)
 	}
 
-	if err = publisher.RegisterTopic(context.Background(), topic); err != nil {
+	if err = publisher.RegisterTopic(context.Background(), topic, WithTopicContentType("application/ld+json; profile=\"https://example.com/profile\"")); err != nil {
 		t.Fatal(err)
 	}
 	if err = publisher.DeregisterTopic(context.Background(), topic); err != nil {
@@ -350,13 +350,71 @@ func TestPublisherClientAgainstHandler(t *testing.T) {
 	if len(registrations) != 2 || len(updates) != 2 {
 		t.Fatalf("callbacks: registrations=%v updates=%+v", registrations, updates)
 	}
-	if registrations[0] != "register:"+normalizedTopic || registrations[1] != "deregister:"+normalizedTopic {
+	if registrations[0] != "register:"+normalizedTopic+":application/ld+json; profile=\"https://example.com/profile\"" ||
+		registrations[1] != "deregister:"+normalizedTopic {
 		t.Fatalf("normalized registration topics = %v", registrations)
 	}
 
 	if updates[0].Kind != UpdateEvent || updates[0].Topic != normalizedTopic || updates[1].Kind != UpdateContent ||
 		updates[1].Topic != normalizedTopic || string(updates[1].Body) != "{\"n\":1}" {
 		t.Fatalf("update mapping = %+v", updates)
+	}
+}
+
+func TestRegistrationContentTypeValidation(t *testing.T) {
+	received := make(chan TopicRegistration, 2)
+	service := minimumService()
+	service.OnRegisterTopic = func(_ context.Context, registration TopicRegistration, _ RequestMetadata) (Result, error) {
+		received <- registration
+		return Result{}, nil
+	}
+	service.OnDeregisterTopic = func(context.Context, TopicDeregistration, RequestMetadata) (Result, error) {
+		return Result{}, nil
+	}
+	service.OnUpdateMessage = func(context.Context, UpdateMessage, RequestMetadata) (Result, error) {
+		return Result{}, nil
+	}
+	handler, err := NewHandler(Config{HubURL: "https://hub.example", EnablePublisherExtension: true}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handler.Close(context.Background()) }()
+
+	topic := "https://publisher.example/topic"
+	tests := []struct {
+		name        string
+		mode        string
+		contentType []string
+		status      int
+		want        string
+	}{
+		{"omitted", "register", nil, http.StatusOK, ""},
+		{"complete value", "register", []string{"application/ld+json; profile=\"https://example.com/profile\""}, http.StatusOK, "application/ld+json; profile=\"https://example.com/profile\""},
+		{"empty", "register", []string{""}, http.StatusBadRequest, ""},
+		{"duplicate", "register", []string{"text/plain", "application/json"}, http.StatusBadRequest, ""},
+		{"malformed", "register", []string{"not a media type"}, http.StatusBadRequest, ""},
+		{"deregistration", "deregister", []string{"text/plain"}, http.StatusBadRequest, ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := url.Values{"hub.mode": {test.mode}, "hub.topic": {topic}}
+			if test.contentType != nil {
+				values["hub.content_type"] = test.contentType
+			}
+			response := postForm(handler, values)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+			if test.status == http.StatusOK {
+				registration := <-received
+				if registration.Mode != ModeRegister || registration.Topic != topic || registration.ContentType != test.want {
+					t.Fatalf("registration = %+v", registration)
+				}
+			}
+		})
+	}
+	if len(received) != 0 {
+		t.Fatalf("invalid registration reached callback: %+v", <-received)
 	}
 }
 

@@ -106,6 +106,35 @@ func TestConsumeEventIncrementsSnapshotRevision(t *testing.T) {
 	}
 }
 
+func TestConsumeEventPreservesTopicContentType(t *testing.T) {
+	broker := &recordingBroker{}
+	consolidator := &Consolidator{
+		topics:        make(map[string]websubhub.TopicRegistration),
+		subscriptions: make(map[string]state.Subscription),
+		broker:        broker,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	registration := websubhub.TopicRegistration{
+		Mode:        websubhub.ModeRegister,
+		Topic:       "https://publisher.example/topics/content-type",
+		ContentType: "application/ld+json; profile=\"https://example.com/profile\"",
+	}
+	payload, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatalf("encode state event: %v", err)
+	}
+	if err := consolidator.consumeEvent(context.Background(), 13, payload); err != nil {
+		t.Fatalf("consume state event: %v", err)
+	}
+	if len(broker.snapshot.Topics) != 1 {
+		t.Fatalf("published topics = %d, want 1", len(broker.snapshot.Topics))
+	}
+	got := broker.snapshot.Topics[0]
+	if got.Topic != registration.Topic || got.ContentType != registration.ContentType {
+		t.Fatalf("published registration = %+v", got)
+	}
+}
+
 func TestConsumeOwnedSubscriptionPersistsServerID(t *testing.T) {
 	broker := &recordingBroker{}
 	consolidator := &Consolidator{

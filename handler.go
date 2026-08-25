@@ -339,6 +339,19 @@ func (h *Handler) serveRegistration(response http.ResponseWriter, request *http.
 		h.writeSafeError(response, http.StatusBadRequest)
 		return
 	}
+	contentType := ""
+	contentTypes, contentTypePresent := values["hub.content_type"]
+	if deregister && contentTypePresent {
+		h.writeSafeError(response, http.StatusBadRequest)
+		return
+	}
+	if contentTypePresent {
+		if len(contentTypes) != 1 || contentTypes[0] == "" || validateContentType(contentTypes[0]) != nil {
+			h.writeSafeError(response, http.StatusBadRequest)
+			return
+		}
+		contentType = contentTypes[0]
+	}
 	metadata := metadataFromRequest(request)
 	var result Result
 	if deregister {
@@ -347,7 +360,7 @@ func (h *Handler) serveRegistration(response http.ResponseWriter, request *http.
 		}, cloneMetadata(metadata))
 	} else {
 		result, err = callRegister(h.service.OnRegisterTopic, request.Context(), TopicRegistration{
-			Mode: ModeRegister, Topic: topic,
+			Mode: ModeRegister, Topic: topic, ContentType: contentType,
 		}, cloneMetadata(metadata))
 	}
 	if err != nil {

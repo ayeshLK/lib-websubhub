@@ -187,6 +187,12 @@ func TestRegistrationPolicy(t *testing.T) {
 	hub := newTestHub(t)
 	topic := "http://publisher.example/topics/orders"
 	registerTopic(t, hub, topic)
+	hub.mu.RLock()
+	registration := hub.topics[topic]
+	hub.mu.RUnlock()
+	if registration.ContentType != "application/json; charset=utf-8" {
+		t.Fatalf("registered content type = %q", registration.ContentType)
+	}
 	_, err := hub.onRegisterTopic(context.Background(), websubhub.TopicRegistration{Mode: websubhub.ModeRegister, Topic: topic}, websubhub.RequestMetadata{})
 	if !errors.Is(err, websubhub.ErrDenied) {
 		t.Fatalf("duplicate registration error = %v, want ErrDenied", err)
@@ -222,8 +228,9 @@ func newTestHub(t *testing.T) *memoryHub {
 func registerTopic(t *testing.T, hub *memoryHub, topic string) {
 	t.Helper()
 	if _, err := hub.onRegisterTopic(context.Background(), websubhub.TopicRegistration{
-		Mode:  websubhub.ModeRegister,
-		Topic: topic,
+		Mode:        websubhub.ModeRegister,
+		Topic:       topic,
+		ContentType: "application/json; charset=utf-8",
 	}, websubhub.RequestMetadata{}); err != nil {
 		t.Fatalf("register topic: %v", err)
 	}

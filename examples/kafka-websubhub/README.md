@@ -130,12 +130,16 @@ Register an absolute HTTP(S) topic:
 curl -i -X POST http://localhost:9090/hub \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   --data-urlencode 'hub.mode=register' \
-  --data-urlencode 'hub.topic=http://localhost:8081/topics/orders'
+  --data-urlencode 'hub.topic=http://localhost:8081/topics/orders' \
+  --data-urlencode 'hub.content_type=application/json; charset=utf-8'
 ```
 
 This response confirms Kafka accepted the event, not that the in-memory view is
 already updated. Before issuing a dependent request in this walkthrough, wait
 for the `state event applied` log entry for that topic.
+The optional content type is persisted in the concrete topic-registration state
+event. Published or fetched content retains its own authoritative complete
+media type.
 
 Start a subscriber callback that echoes `hub.challenge` for verification GETs
 and accepts delivery POSTs. Then subscribe:
