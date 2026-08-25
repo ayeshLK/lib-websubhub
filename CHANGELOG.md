@@ -60,6 +60,10 @@ All notable changes to this project will be documented here. The project uses
 
 - Complete Kafka state replay immediately when `websub-events` is empty
   instead of waiting for the startup context to expire.
+- Complete the Release Please publication lifecycle so manually approved
+  releases tag the release pull request merge commit and transition its state
+  from pending to tagged, and report any stale merged-pending state as a
+  workflow failure.
 - Document the repository permission required for Release Please to create its
   pull request with the built-in GitHub Actions token.
 - Prepare v0.5.0 as the first automated release instead of accepting Release
