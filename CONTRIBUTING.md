@@ -81,11 +81,16 @@ The root module uses immutable semantic-version tags such as `v0.5.0`. Do not
 create, move, reuse, or delete release tags manually.
 
 A maintainer starts the Release Please workflow to prepare a version and
-changelog pull request. After that pull request is reviewed and merged, a
-maintainer starts the publication workflow through the `release` environment,
-which must require maintainer approval. Publication validates the module and
-examples before creating the GitHub Release. Workflow changes must preserve
-least-privilege permissions and pin third-party actions to full commit SHAs.
+changelog pull request. Preparation fails explicitly if an earlier merged
+release pull request still awaits publication. After the prepared pull request
+is reviewed and merged, a maintainer starts the publication workflow through
+the `release` environment, which must require maintainer approval. Publication
+validates the module and examples before asking Release Please to create the
+GitHub Release at the release pull request merge commit and complete its
+pending-to-tagged lifecycle.
+
+Workflow changes must preserve least-privilege permissions and pin third-party
+actions to full commit SHAs.
 
 ## Repository hygiene and licensing
 

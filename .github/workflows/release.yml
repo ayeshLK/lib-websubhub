@@ -5,6 +5,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   release:
@@ -37,16 +39,10 @@ jobs:
             echo "Tag $TAG already exists; merge the next release PR first" >&2
             exit 1
           fi
-          if ! awk -v version="$VERSION" '$1 == "##" && ($2 == version || $2 == "[" version "]") { found = 1 } END { exit !found }' CHANGELOG.md; then
+          if ! awk -v version="$VERSION" '$1 == "##" && ($2 == version || substr($2, 1, length(version) + 2) == "[" version "]") { found = 1 } END { exit !found }' CHANGELOG.md; then
             echo "CHANGELOG.md has no release section for $VERSION" >&2
             exit 1
           fi
-          awk -v version="$VERSION" '
-            $1 == "##" && ($2 == version || $2 == "[" version "]") { capture = 1; next }
-            capture && /^## / { exit }
-            capture { print }
-          ' CHANGELOG.md > release-notes.md
-          test -s release-notes.md
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Verify core
         run: |
@@ -67,7 +63,25 @@ jobs:
           go vet ./...
           go test -race ./...
       - name: Create GitHub release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+          target-branch: main
+      - name: Verify GitHub release
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: gh release create "$TAG" --target "$(git rev-parse HEAD)" --notes-file release-notes.md --title "$TAG"
+          EXPECTED_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          if [[ "$RELEASE_CREATED" != "true" ]]; then
+            echo "Release Please did not create the prepared release" >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then
+            echo "Release Please created $RELEASE_TAG, expected $EXPECTED_TAG" >&2
+            exit 1
+          fi
