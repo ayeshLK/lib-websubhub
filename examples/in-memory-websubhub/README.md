@@ -81,11 +81,15 @@ current representation with `GET`.
 curl -i -X POST http://localhost:9090/hub \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   --data-urlencode 'hub.mode=register' \
-  --data-urlencode 'hub.topic=http://localhost:8081/topics/orders'
+  --data-urlencode 'hub.topic=http://localhost:8081/topics/orders' \
+  --data-urlencode 'hub.content_type=application/json; charset=utf-8'
 ```
 
 A successful registration response is HTTP `200 OK` with an `accepted` form
 response.
+The optional content type is retained as application-owned topic metadata. The
+media type supplied with an actual publication or topic fetch remains
+authoritative for delivery.
 
 ### 2. Subscribe a callback
 

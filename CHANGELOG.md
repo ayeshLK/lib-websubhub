@@ -67,6 +67,9 @@ All notable changes to this project will be documented here. The project uses
 
 ### Added
 
+- Optional topic content-type declarations for publisher registration, with a
+  `RegisterTopic` functional option that preserves existing two-argument calls
+  and keeps metadata policy application-owned.
 - Kafka-backed hub example with an eventually consistent `websub-events`
   projection, hashed content topics, one consumer group per subscription,
   JSON delivery, bounded retries, and application-owned stale-subscription

@@ -67,7 +67,7 @@ type storedSubscription struct {
 type Hub struct {
 	operationMu sync.Mutex
 	mu          sync.RWMutex
-	topics      map[string]struct{}
+	topics      map[string]websubhub.TopicRegistration
 	subscribers map[string]map[string]*storedSubscription
 	replaying   bool
 
@@ -129,7 +129,7 @@ func New(startupContext context.Context, options Options) (*Hub, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &Hub{
-		topics:           make(map[string]struct{}),
+		topics:           make(map[string]websubhub.TopicRegistration),
 		subscribers:      make(map[string]map[string]*storedSubscription),
 		replaying:        true,
 		serverID:         options.ServerID,
@@ -351,7 +351,7 @@ func (h *Hub) ApplyTopicRegistration(_ context.Context, registration websubhub.T
 	if registration.Mode != websubhub.ModeRegister || registration.Topic == "" {
 		return errors.New("invalid topic registration event")
 	}
-	h.topics[registration.Topic] = struct{}{}
+	h.topics[registration.Topic] = registration
 	h.logger.Info("state event applied", "mode", registration.Mode, "topic", registration.Topic)
 	return nil
 }

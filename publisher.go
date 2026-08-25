@@ -44,6 +44,41 @@ type PublisherClient struct {
 	maxBody int64
 }
 
+// RegisterTopicOption configures a topic-registration request. Implementations
+// are provided by this package.
+type RegisterTopicOption interface {
+	applyRegisterTopic(*registerTopicOptions) error
+}
+
+type registerTopicOptions struct {
+	contentType    string
+	contentTypeSet bool
+}
+
+type registerTopicOptionFunc func(*registerTopicOptions) error
+
+func (option registerTopicOptionFunc) applyRegisterTopic(options *registerTopicOptions) error {
+	if option == nil {
+		return invalidRequest("RegisterTopicOption must not be nil")
+	}
+	return option(options)
+}
+
+// WithTopicContentType declares the topic's expected complete media type.
+func WithTopicContentType(contentType string) RegisterTopicOption {
+	return registerTopicOptionFunc(func(options *registerTopicOptions) error {
+		if options.contentTypeSet {
+			return invalidRequest("topic content type must not be supplied more than once")
+		}
+		if err := validateContentType(contentType); err != nil {
+			return err
+		}
+		options.contentType = contentType
+		options.contentTypeSet = true
+		return nil
+	})
+}
+
 // NewPublisherClient validates and snapshots publisher transport settings.
 // It does not mutate config.HTTPClient.
 func NewPublisherClient(config PublisherClientConfig) (*PublisherClient, error) {
@@ -63,19 +98,36 @@ func NewPublisherClient(config PublisherClientConfig) (*PublisherClient, error) 
 	}, nil
 }
 
-// RegisterTopic requests registration of an absolute HTTP(S) topic URL.
-func (c *PublisherClient) RegisterTopic(ctx context.Context, topic string) error {
-	return c.sendForm(ctx, ModeRegister, topic, "")
+// RegisterTopic requests registration of an absolute HTTP(S) topic URL with
+// optional publisher-extension metadata.
+func (c *PublisherClient) RegisterTopic(ctx context.Context, topic string, supplied ...RegisterTopicOption) error {
+	if c == nil {
+		return invalidRequest("PublisherClient is nil")
+	}
+	options := registerTopicOptions{}
+	for _, option := range supplied {
+		if option == nil {
+			return invalidRequest("RegisterTopicOption must not be nil")
+		}
+		if err := option.applyRegisterTopic(&options); err != nil {
+			return err
+		}
+	}
+	fields := url.Values{}
+	if options.contentTypeSet {
+		fields.Set("hub.content_type", options.contentType)
+	}
+	return c.sendForm(ctx, ModeRegister, topic, "", fields)
 }
 
 // DeregisterTopic requests deregistration of an absolute HTTP(S) topic URL.
 func (c *PublisherClient) DeregisterTopic(ctx context.Context, topic string) error {
-	return c.sendForm(ctx, ModeDeregister, topic, "")
+	return c.sendForm(ctx, ModeDeregister, topic, "", nil)
 }
 
 // Notify sends an event-only update notification.
 func (c *PublisherClient) Notify(ctx context.Context, topic string) error {
-	return c.sendForm(ctx, ModePublish, topic, "event")
+	return c.sendForm(ctx, ModePublish, topic, "event", nil)
 }
 
 // Publish sends one exact content update.
@@ -116,7 +168,7 @@ func (c *PublisherClient) Publish(ctx context.Context, message UpdateMessage) er
 	return c.do(request)
 }
 
-func (c *PublisherClient) sendForm(ctx context.Context, mode Mode, topic, extensionMode string) error {
+func (c *PublisherClient) sendForm(ctx context.Context, mode Mode, topic, extensionMode string, fields url.Values) error {
 	if c == nil {
 		return invalidRequest("PublisherClient is nil")
 	}
@@ -126,6 +178,9 @@ func (c *PublisherClient) sendForm(ctx context.Context, mode Mode, topic, extens
 	form := url.Values{
 		"hub.mode":  {string(mode)},
 		"hub.topic": {topic},
+	}
+	for name, values := range fields {
+		form[name] = append([]string(nil), values...)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.hubURL, bytes.NewBufferString(form.Encode()))
 	if err != nil {

@@ -332,8 +332,9 @@ func TestPublishedStateIsAppliedOnlyByConsumer(t *testing.T) {
 	topic := "http://publisher.example/topics/eventual"
 
 	if _, err := hub.onRegisterTopic(context.Background(), websubhub.TopicRegistration{
-		Mode:  websubhub.ModeRegister,
-		Topic: topic,
+		Mode:        websubhub.ModeRegister,
+		Topic:       topic,
+		ContentType: "application/json; charset=utf-8",
 	}, websubhub.RequestMetadata{}); err != nil {
 		t.Fatalf("publish registration event: %v", err)
 	}
@@ -345,6 +346,12 @@ func TestPublishedStateIsAppliedOnlyByConsumer(t *testing.T) {
 	waitForAppliedEvent(t, broker, string(websubhub.ModeRegister))
 	if !hub.hasTopic(topic) {
 		t.Fatal("event consumer did not update in-memory state")
+	}
+	hub.mu.RLock()
+	registration := hub.topics[topic]
+	hub.mu.RUnlock()
+	if registration.ContentType != "application/json; charset=utf-8" {
+		t.Fatalf("registered content type = %q", registration.ContentType)
 	}
 }
 
@@ -536,7 +543,7 @@ func TestStaleSubscriptionIsFlatAndRecoveryReusesConsumerGroup(t *testing.T) {
 		t.Fatalf("server ID JSON = %s", got)
 	}
 	decodedHub := &Hub{
-		topics:      make(map[string]struct{}),
+		topics:      make(map[string]websubhub.TopicRegistration),
 		subscribers: make(map[string]map[string]*storedSubscription),
 		replaying:   true,
 		serverID:    testServerID,

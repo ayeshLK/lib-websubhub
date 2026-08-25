@@ -247,8 +247,10 @@ verification.
 
 ### 5.3 Publisher and delivery values
 
-`TopicRegistration` and `TopicDeregistration` contain only their fixed mode and
-normalized topic.
+`TopicRegistration` contains its fixed mode, normalized topic, and optional
+complete publisher-declared content type. `TopicDeregistration` contains only
+its fixed mode and normalized topic. An omitted registration content type is
+represented by the empty string.
 
 `UpdateMessage` contains its kind, normalized topic, complete content type,
 exact body bytes, and detached request headers. Event notifications have
@@ -385,14 +387,22 @@ Form operations require `application/x-www-form-urlencoded`. An omitted
 `charset` is accepted. An explicit charset is accepted only when it is UTF-8,
 case-insensitively.
 
-Publisher content and delivery content types may be any syntactically valid
-media type. Their complete caller-supplied value, including parameters, MUST be
-preserved.
+Publisher registration, publisher content, and delivery content types may be
+any syntactically valid media type. Their complete caller-supplied value,
+including parameters, MUST be preserved. A registration content type is a
+declaration of expected topic metadata; it MUST NOT replace the media type of
+an actual published or fetched representation.
 
 ### 7.3 Form fields
 
 `hub.mode`, `hub.topic`, and `hub.callback` are required where defined. A
 required field MUST occur exactly once and MUST be non-empty.
+
+`hub.content_type` is optional for registration. When present it MUST occur
+exactly once, MUST be non-empty, and MUST be a syntactically valid media type.
+It MUST be rejected on deregistration. Its decoded complete value MUST be
+exposed through `TopicRegistration.ContentType`; omission produces the empty
+string.
 
 Unknown subscription and unsubscription parameters MUST be preserved in a
 detached `url.Values` after reserved fields are removed. Registration and update
@@ -783,10 +793,17 @@ dispatch. `HeaderGoPublisher` is the exported name for `X-Go-Publisher`.
 
 | Operation | Wire form | Callback | Default response |
 |---|---|---|---|
-| register | form body: `hub.mode=register` and `hub.topic` | `OnRegisterTopic` | 200 accepted |
-| deregister | form body: `hub.mode=deregister` and `hub.topic` | `OnDeregisterTopic` | 200 accepted |
+| register | form body: `hub.mode=register`, `hub.topic`, and optional `hub.content_type` | `OnRegisterTopic` | 200 accepted |
+| deregister | form body: `hub.mode=deregister` and `hub.topic`; `hub.content_type` is invalid | `OnDeregisterTopic` | 200 accepted |
 | event | form body: `hub.mode=publish` and `hub.topic`; `X-Go-Publisher: event` | `OnUpdateMessage` with `UpdateEvent` | 202 accepted |
 | content | query: `hub.mode=publish` and `hub.topic`; arbitrary content body | `OnUpdateMessage` with `UpdateContent` | 202 accepted |
+
+The optional registration content type is publisher-declared metadata supplied
+to the application. The framework validates and preserves it but MUST NOT
+persist it, infer update content from it, or enforce agreement with later
+updates. Applications MAY reject unsupported types or apply a mismatch policy.
+The actual published or fetched representation's valid content type remains
+authoritative.
 
 Content publication accepts an absent publisher header or
 `X-Go-Publisher: publish`. `PublisherClient.Publish` sends the explicit header.
@@ -804,7 +821,7 @@ error produces 400 with form fields `hub.mode=denied` and a sanitized
 
 `PublisherClient` provides:
 
-- `RegisterTopic`;
+- `RegisterTopic`, with optional `RegisterTopicOption` values;
 - `DeregisterTopic`;
 - `Notify` for event-only publication;
 - `Publish` for exact content.
@@ -813,6 +830,14 @@ Every request uses POST and propagates its context. Register, deregister, and
 notify use form bodies. Publish preserves the exact body and complete content
 type, appends `hub.mode` and `hub.topic` to any existing hub query, and sends
 `X-Go-Publisher: publish`.
+
+`WithTopicContentType` adds one `hub.content_type` registration field while a
+call without options preserves the original wire form. The client MUST reject a
+nil option, a nil option implementation, more than one content-type option, or
+an empty or malformed value before making an HTTP request. It MUST preserve the
+complete supplied value. `RegisterTopicOption` is sealed so external packages
+select behavior through package-provided option constructors rather than custom
+implementations.
 
 A publisher response succeeds only when its status is 2xx and its bounded form
 body contains exactly one `hub.mode=accepted`. Every other response returns an

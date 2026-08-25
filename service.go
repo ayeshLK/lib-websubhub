@@ -111,6 +111,9 @@ type TopicRegistration struct {
 	// Topic is the absolute HTTP(S) topic URL after percent-encoded unreserved
 	// characters are decoded.
 	Topic string
+	// ContentType is the optional complete media type declared for the topic.
+	// It is empty when the publisher omitted hub.content_type.
+	ContentType string
 }
 
 // TopicDeregistration describes an optional publisher-extension deregistration.

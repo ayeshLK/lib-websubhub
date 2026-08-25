@@ -62,7 +62,7 @@ type deliveryJob struct {
 // HTTP parsing, intent verification, protocol responses, and delivery framing.
 type memoryHub struct {
 	mu            sync.RWMutex
-	topics        map[string]struct{}
+	topics        map[string]websubhub.TopicRegistration
 	subscriptions map[string]map[string]storedSubscription
 	nextVersion   uint64
 
@@ -108,7 +108,7 @@ func newMemoryHub(options hubOptions) (*memoryHub, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &memoryHub{
-		topics:          make(map[string]struct{}),
+		topics:          make(map[string]websubhub.TopicRegistration),
 		subscriptions:   make(map[string]map[string]storedSubscription),
 		updates:         make(chan websubhub.UpdateMessage, options.updateQueue),
 		deliveries:      make(chan deliveryJob, options.deliveryQueue),
@@ -153,7 +153,7 @@ func (h *memoryHub) onRegisterTopic(_ context.Context, registration websubhub.To
 	if _, exists := h.topics[registration.Topic]; exists {
 		return websubhub.Result{}, &websubhub.DeniedError{Reason: "topic is already registered"}
 	}
-	h.topics[registration.Topic] = struct{}{}
+	h.topics[registration.Topic] = registration
 	h.logger.Info("topic registered", "topic", registration.Topic)
 	return websubhub.Result{}, nil
 }

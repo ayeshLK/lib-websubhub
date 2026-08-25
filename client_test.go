@@ -180,11 +180,11 @@ func TestPublisherClientWire(t *testing.T) {
 		t.Fatalf("publisher header = %q", HeaderGoPublisher)
 	}
 	type seenRequest struct {
-		mode, topic, extension, contentType, body string
-		query                                     url.Values
-		header                                    http.Header
+		mode, topic, extension, contentType, topicContentType, body string
+		query                                                       url.Values
+		header                                                      http.Header
 	}
-	seen := make(chan seenRequest, 4)
+	seen := make(chan seenRequest, 5)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		values, _ := url.ParseQuery(string(body))
@@ -193,7 +193,8 @@ func TestPublisherClientWire(t *testing.T) {
 			mode, topic = r.URL.Query().Get("hub.mode"), r.URL.Query().Get("hub.topic")
 		}
 		seen <- seenRequest{mode: mode, topic: topic, extension: r.Header.Get("X-Go-Publisher"),
-			contentType: r.Header.Get("Content-Type"), body: string(body), query: r.URL.Query(), header: r.Header.Clone()}
+			contentType: r.Header.Get("Content-Type"), topicContentType: values.Get("hub.content_type"),
+			body: string(body), query: r.URL.Query(), header: r.Header.Clone()}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("hub.mode=accepted"))
 	}))
@@ -204,6 +205,9 @@ func TestPublisherClientWire(t *testing.T) {
 	}
 	topic := "https://publisher.example/topic"
 	if err = client.RegisterTopic(context.Background(), topic); err != nil {
+		t.Fatal(err)
+	}
+	if err = client.RegisterTopic(context.Background(), topic, WithTopicContentType("application/atom+xml; charset=utf-8")); err != nil {
 		t.Fatal(err)
 	}
 	if err = client.DeregisterTopic(context.Background(), topic); err != nil {
@@ -217,17 +221,23 @@ func TestPublisherClientWire(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got := []seenRequest{<-seen, <-seen, <-seen, <-seen}
-	if got[0].mode != "register" || got[1].mode != "deregister" {
+	got := []seenRequest{<-seen, <-seen, <-seen, <-seen, <-seen}
+	if got[0].mode != "register" || got[0].topicContentType != "" ||
+		got[0].body != "hub.mode=register&hub.topic=https%3A%2F%2Fpublisher.example%2Ftopic" {
+		t.Fatalf("plain registration wire: %+v", got[0])
+	}
+	if got[1].mode != "register" || got[1].topicContentType != "application/atom+xml; charset=utf-8" ||
+		got[1].body != "hub.content_type=application%2Fatom%2Bxml%3B+charset%3Dutf-8&hub.mode=register&hub.topic=https%3A%2F%2Fpublisher.example%2Ftopic" ||
+		got[2].mode != "deregister" {
 		t.Fatalf("registration modes: %+v", got)
 	}
-	if got[2].mode != "publish" || got[2].extension != "event" {
-		t.Fatalf("notify wire: %+v", got[2])
+	if got[3].mode != "publish" || got[3].extension != "event" {
+		t.Fatalf("notify wire: %+v", got[3])
 	}
-	if got[3].mode != "publish" || got[3].extension != "publish" || got[3].body != "{}" ||
-		got[3].contentType != "application/json; charset=utf-8" || got[3].header.Get("X-Trace") != "7" ||
-		got[3].query.Get("tenant") != "one" {
-		t.Fatalf("publish wire: %+v", got[3])
+	if got[4].mode != "publish" || got[4].extension != "publish" || got[4].body != "{}" ||
+		got[4].contentType != "application/json; charset=utf-8" || got[4].header.Get("X-Trace") != "7" ||
+		got[4].query.Get("tenant") != "one" {
+		t.Fatalf("publish wire: %+v", got[4])
 	}
 }
 
@@ -274,6 +284,28 @@ func TestPublisherErrorsAndValidation(t *testing.T) {
 	}
 	if err := valid.RegisterTopic(context.Background(), "test"); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("relative registration topic accepted: %v", err)
+	}
+	var nilOption RegisterTopicOption
+	var nilOptionFunc registerTopicOptionFunc
+	invalidOptions := []struct {
+		name    string
+		options []RegisterTopicOption
+	}{
+		{"nil option", []RegisterTopicOption{nilOption}},
+		{"typed nil option", []RegisterTopicOption{nilOptionFunc}},
+		{"empty content type", []RegisterTopicOption{WithTopicContentType("")}},
+		{"malformed content type", []RegisterTopicOption{WithTopicContentType("not a media type")}},
+		{"duplicate content type", []RegisterTopicOption{WithTopicContentType("text/plain"), WithTopicContentType("application/json")}},
+	}
+	for _, test := range invalidOptions {
+		t.Run(test.name, func(t *testing.T) {
+			if optionErr := valid.RegisterTopic(context.Background(), "https://topic.example", test.options...); !errors.Is(optionErr, ErrInvalidRequest) {
+				t.Fatalf("invalid registration options accepted: %v", optionErr)
+			}
+		})
+	}
+	if err := nilClient.RegisterTopic(context.Background(), "https://topic.example", WithTopicContentType("text/plain")); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil publisher registration error = %v", err)
 	}
 	if err := valid.Publish(context.Background(), UpdateMessage{Topic: "https://topic.example", ContentType: "text/plain", Header: http.Header{HeaderGoPublisher: {"event"}}}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("reserved header accepted: %v", err)
