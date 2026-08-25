@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/ayeshLK/lib-websubhub/compare/v0.5.0...v0.6.0) (2026-08-25)
+
+
+### Features
+
+* support topic content types in registration ([890f48b](https://github.com/ayeshLK/lib-websubhub/commit/890f48b471d5d9f2cb0c1e593e7edb53d4cbc711))
+* support topic content types in registration ([3292f66](https://github.com/ayeshLK/lib-websubhub/commit/3292f66e5dc05a2e2fde9e3f2d4b36b95795007e))
+
 ## 0.5.0 (2026-08-21)
 
 
