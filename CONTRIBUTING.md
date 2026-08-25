@@ -80,6 +80,10 @@ commits focused and exclude unrelated artifacts.
 The root module uses immutable semantic-version tags such as `v0.5.0`. Do not
 create, move, reuse, or delete release tags manually.
 
+Release Please owns `CHANGELOG.md`: use Conventional Commit subjects and let
+the release pull request prepend versioned sections. Do not add a manual
+`Unreleased` section.
+
 A maintainer starts the Release Please workflow to prepare a version and
 changelog pull request. Preparation fails explicitly if an earlier merged
 release pull request still awaits publication. After the prepared pull request
