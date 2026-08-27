@@ -9,7 +9,9 @@ name is `websubhub`.
 The API is pre-release and under active validation. Compatibility is not yet
 guaranteed, but an agent must not make an unrelated breaking change without
 explicit task scope. Deliberate API changes require coordinated specification,
-test, documentation, and `CHANGELOG.md` updates.
+test, public documentation, and release-note handling. Use an appropriate
+Conventional Commit subject so Release Please records the change; do not add a
+manual `Unreleased` section to `CHANGELOG.md`.
 
 This package is not a complete hub product and must not claim standalone W3C hub
 or subscriber conformance while the application responsibilities in
@@ -55,6 +57,8 @@ public claims together.
 ## Repository map
 
 - `CONTRIBUTING.md`: human contributor validation and release workflow.
+- `CHANGELOG.md`: Release Please-owned, versioned release history; do not edit
+  it as a hand-maintained pending-change list.
 - `doc.go`: package overview and public ownership boundary.
 - `handler.go`: inbound HTTP parsing, dispatch, verification queue, and handler
   lifecycle.
@@ -180,6 +184,13 @@ an optional extension, disabled by default:
 - All three publisher callbacks are required when the extension is enabled.
 - `X-Go-Publisher: publish|event` selects content or event notification mode.
 - `HeaderGoPublisher` is the exported header-name constant.
+- `PublisherClient.RegisterTopic` accepts optional sealed
+  `RegisterTopicOption` values. `WithTopicContentType` sends one validated,
+  complete `hub.content_type`; omission preserves the original request form.
+- Inbound registration exposes the optional value unchanged through
+  `TopicRegistration.ContentType`, or the empty string when omitted. It is
+  publisher-declared metadata: the framework does not persist it or enforce it
+  against later content updates.
 - Extension behavior is excluded from the W3C conformance claim and must remain
   isolated from subscription and unsubscription paths.
 
@@ -233,7 +244,7 @@ application state and may be present in its records.
   raise it solely because a newer toolchain is locally installed.
 - CI validates Go 1.25.x and 1.26.x, with the newest supported version receiving
   race and coverage checks.
-- Releases use ordinary root-module semantic-version tags such as `v0.1.0`; do
+- Releases use ordinary root-module semantic-version tags such as `v0.6.0`; do
   not use subdirectory tag prefixes.
 - External dependencies require explicit architecture and security review.
 
@@ -293,8 +304,10 @@ example module.
 
 For API, protocol, or security changes:
 
-- update `docs/spec.md`, relevant tests, README usage, and `CHANGELOG.md` in the
-  same change;
+- update `docs/spec.md`, relevant tests, README usage, and Go documentation in
+  the same change;
+- use a release-driving Conventional Commit subject and let Release Please
+  update `CHANGELOG.md`; do not add a manual `Unreleased` section;
 - preserve or extend protocol-critical behavioral coverage when the contract
   changes;
 - add table-driven boundary cases and a regression test for every fixed defect;
@@ -307,8 +320,14 @@ tags, releases, commits, or pushes unless the user explicitly requests them.
 Use Conventional Commit subjects for commits and squash-merge titles that reach
 `main`: `fix:` selects a patch release, `feat:` selects a minor release, and
 `type!:` or a `BREAKING CHANGE:` footer identifies an incompatible change.
-Release Please prepares the resulting version and changelog in a reviewable pull
-request; publication remains a separate, manually approved workflow.
+Release Please owns `CHANGELOG.md` and prepares the resulting version and
+changelog in a reviewable pull request. Preparation must fail explicitly while
+an earlier merged release pull request remains `autorelease: pending`. After the
+release pull request merges, the separately approved publication workflow
+validates the repository, runs Release Please in release-only mode, tags the
+release pull request merge commit, and transitions the pull request to
+`autorelease: tagged`. Do not manually create, move, reuse, or delete release
+tags or bypass this lifecycle with `gh release create`.
 
 ## Documentation and licensing
 
