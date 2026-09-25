@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/ayeshLK/lib-websubhub/compare/v0.6.0...v0.6.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* complete release please publication lifecycle ([c0ba083](https://github.com/ayeshLK/lib-websubhub/commit/c0ba083355dd55d7768da3295ab23fa1507e98a7))
+* complete release please publication lifecycle ([45c3964](https://github.com/ayeshLK/lib-websubhub/commit/45c3964bb3e97d5a458ba5251a411d83b452f5b4))
+
 ## [0.6.0](https://github.com/ayeshLK/lib-websubhub/compare/v0.5.0...v0.6.0) (2026-08-25)
 
 
