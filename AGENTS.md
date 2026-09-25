@@ -269,6 +269,10 @@ go test -covermode=atomic -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out
 ```
 
+Run one root test with `go test -run '^TestName$' .`; add `-count=1` to bypass
+cached results. For an example test, run from that example module with
+`go test -run '^TestName$' ./...`.
+
 Statement coverage must remain at least 85%, but coverage alone does not replace
 explicit assertions for every affected protocol-critical behavior. If race
 testing cannot run because CGO or a C compiler is unavailable, report that
